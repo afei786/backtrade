@@ -127,11 +127,14 @@ class PySQL:
         if not data_list:
             return 0
             
-        columns = ", ".join([f"`{k}`" for k in data_list[0].keys()])
-        placeholders = ", ".join(["%s"] * len(data_list[0]))
-        sql = f"INSERT INTO `{table_name}` ({columns}) VALUES ({placeholders})"
+        # 先获取所有列名，固定顺序
+        columns = list(data_list[0].keys())
+        columns_str = ", ".join([f"`{k}`" for k in columns])
+        placeholders = ", ".join(["%s"] * len(columns))
+        sql = f"INSERT INTO `{table_name}` ({columns_str}) VALUES ({placeholders})"
         
-        values = [tuple(data.values()) for data in data_list]
+        # 按照固定的列顺序提取值
+        values = [[data[column] for column in columns] for data in data_list]
         
         try:
             if not self.connection or not self.connection.is_connected():
