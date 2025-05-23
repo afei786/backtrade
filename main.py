@@ -15,27 +15,27 @@ def start():
     
     # 创建IN查询的占位符
     placeholders = ', '.join(['%s'] * len(stock_list))
-    where_clause = f'trade_date > "2024-10-01" AND trade_date < "2025-05-20" AND stock_code IN ({placeholders})'
+    where_clause = f'trade_date > "2025-04-06" AND trade_date < "2025-04-08" AND stock_code IN ({placeholders})'
     
     stocks_data = user_sql.select('stock_daily_k',
-                    columns=['stock_code','trade_date','open','high','low','close','change_value'],
+                    columns=['stock_code','trade_date','open','high','low','close','change_value','pct_change'],
                     where=where_clause, 
                     params=stock_list)
     
     # 准备数据
     df = pd.DataFrame(stocks_data)
-    df = df[['stock_code', 'trade_date', 'open', 'high', 'low', 'close', 'change_value']]
+    df = df[['stock_code', 'trade_date', 'open', 'high', 'low', 'close', 'change_value','pct_change']]
     
     # 设置回测股票列表
     
     # 运行回测
-    mybt = MYBT(df, initial_capital=100000, stock_list=stock_list)
+    mybt = MYBT(df, initial_capital=100000, stock_list=stock_list, index_code='000300.SH')
 
     mybt.run_backtest()
 
 class MYBT(StockBacktest):
     def __init__(self, data: pd.DataFrame, initial_capital: float = 100000, log_file: str = 'backtest_log.txt',
-                 start_time: str = None, end_time: str = None, stock_list: list = None):
+                 start_time: str = None, end_time: str = None, stock_list: list = None, index_code: str = '000300.SH'):
         super().__init__(data, initial_capital, log_file, start_time, end_time, stock_list)
         
     def strategy(self,stock):
@@ -45,14 +45,14 @@ class MYBT(StockBacktest):
         # 示例策略：持仓不足100股时买入
         if self.stocks_position[stock]['available'] < 100:
             self.buy(stock, self.open_price, 100)
-        
+
         # 止盈
-        if self.stocks_position[stock]['available'] > 100 and self.open_price >= self.stocks_position[stock]['cost_price'] * 1.15:
+        if self.stocks_position[stock]['available'] >= 100 and self.open_price >= self.stocks_position[stock]['cost_price'] * 1.15:
             print('yes')
             self.sell(stock, self.open_price, self.stocks_position[stock]['available'])
         
         # 补仓
-        if self.stocks_position[stock]['available'] > 100 and self.open_price <= self.stocks_position[stock]['cost_price'] * 0.8:
+        if self.stocks_position[stock]['available'] >= 100 and self.open_price <= self.stocks_position[stock]['cost_price'] * 0.85:
             print('no')
 
             self.buy(stock, self.open_price, 100)
