@@ -2,6 +2,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 import decimal
 from pysql import PySQL
+import os
 
 
 class StockBacktest:
@@ -195,14 +196,20 @@ class StockBacktest:
         # 计算同期指数收益率
         try:
             if not self.index_data.empty and self.current_date in self.index_data.index:
+                cost_index = self.index_data.loc[self.start_time, 'open']
+                open = self.index_data.loc[self.current_date, 'open']
+                close = self.index_data.loc[self.current_date, 'close']
                 pct_change = self.index_data.loc[self.current_date, 'pct_change']
-                self.log_message(f"指数{self.index_code}同期收益率: {pct_change:.2f}%")
-                self.log_message(f"策略超额收益: {returns - pct_change:.2f}%")
+                profit_rate = (close/cost_index - 1) * 100
+                self.log_message(f"{cost_index, open, close, pct_change, profit_rate}")
+                self.log_message(f"指数{self.index_code}当天收益率: {(close/open - 1) * 100:.2f}%, 当日涨跌幅{pct_change:.2f}%, 持仓收益率: {profit_rate:.2f}%")
+                self.log_message(f"策略超额收益: {returns - profit_rate:.2f}%")
         except Exception as e:
             self.log_message(f"计算指数收益率时出错: {e}")
         
         # 记录总体信息
-        self.log_message(f"当日总结: 总市值 {market_cap:.2f}，现金 {self.cash:.2f}，总资产 {total_value:.2f}，总盈亏 {total_profit:.2f}，总收益率 {returns:.2f}%")
+        cumulative_profit = total_value - self.initial_capital
+        self.log_message(f"当日总结: 总市值 {market_cap:.2f}，现金 {self.cash:.2f}，总资产 {total_value:.2f}，当日盈亏 {total_profit:.2f}，累计盈亏 {cumulative_profit:.2f}，总收益率 {returns:.2f}%")
         
         return returns
       
@@ -293,7 +300,9 @@ class BacktestVisualizer:
             'trades': [],
             'cash': [],           # 现金
             'market_value': [],   # 市值
-            'total_assets': []    # 总资产
+            'total_assets': [],   # 总资产
+            'daily_profit': [],   # 新增：当日盈亏
+            'cumulative_profit': [] # 新增：累计盈亏
         }
         
     def parse_log_file(self):
@@ -305,7 +314,9 @@ class BacktestVisualizer:
         index_return_pattern = re.compile(r'指数.*?同期收益率: ([-\d.]+)%')
         excess_return_pattern = re.compile(r'策略超额收益: ([-\d.]+)%')
         trade_pattern = re.compile(r'\[(\d{4}-\d{2}-\d{2})\] (买入|卖出) ([\w.]+) (\d+) 股 @ ([\d.]+)')
-        daily_summary_pattern = re.compile(r'当日总结: 总市值 ([\d.]+)，现金 ([\d.]+)，总资产 ([\d.]+)，总盈亏 ([\d.]+)，总收益率')
+        daily_summary_pattern = re.compile(
+            r'当日总结: 总市值 ([\d.]+)，现金 ([\d.]+)，总资产 ([\d.]+)，当日盈亏 ([\d.\-]+)，累计盈亏 ([\d.\-]+)，总收益率 ([-\d.]+)%'
+        )
         
         current_date = None
         
@@ -325,17 +336,21 @@ class BacktestVisualizer:
                         if return_match:
                             self.data['dates'].append(current_date)
                             self.data['strategy_returns'].append(float(return_match.group(1)))
-                            
-                        # 提取每日资金情况
+                        
+                        # 提取每日资金情况（含盈亏）
                         summary_match = daily_summary_pattern.search(line)
                         if summary_match:
                             market_value = float(summary_match.group(1))
                             cash = float(summary_match.group(2))
                             total_assets = float(summary_match.group(3))
-                            
+                            daily_profit = float(summary_match.group(4))
+                            cumulative_profit = float(summary_match.group(5))
+                            # 追加到对应字段
                             self.data['market_value'].append(market_value)
                             self.data['cash'].append(cash)
                             self.data['total_assets'].append(total_assets)
+                            self.data['daily_profit'].append(daily_profit)
+                            self.data['cumulative_profit'].append(cumulative_profit)
                     
                     # 提取指数收益率
                     if '指数' in line and '同期收益率' in line:
@@ -933,7 +948,12 @@ class BacktestVisualizer:
         """解析日志、生成HTML并启动服务器"""
         if self.parse_log_file():
             if self.generate_html(html_file):
+                print(f"HTML报表已成功生成: {os.path.abspath(html_file)}")
                 self.start_server(html_file)
+            else:
+                print("HTML报表生成失败")
+        else:
+            print("日志文件解析失败")
 
 
 if __name__ == '__main__':
@@ -946,11 +966,11 @@ if __name__ == '__main__':
         port=3306
     )
     user_sql.connect()
-    stock_list = ['000001.XSHE', '000002.XSHE', '000004.XSHE']
+    stock_list = ['002594.XSHE']
     
     # 创建IN查询的占位符
     placeholders = ', '.join(['%s'] * len(stock_list))
-    where_clause = f'trade_date > "2025-05-01" AND trade_date < "2025-05-20" AND stock_code IN ({placeholders})'
+    where_clause = f'trade_date > "2024-09-30" AND trade_date < "2025-05-20" AND stock_code IN ({placeholders})'
     
     stocks_data = user_sql.select('stock_daily_k',
                     columns=['stock_code','trade_date','open','high','low','close','change_value','pct_change'],
@@ -962,7 +982,7 @@ if __name__ == '__main__':
     df = df[['stock_code', 'trade_date', 'open', 'high', 'low', 'close', 'change_value','pct_change']]
     
     # 使用方法1：运行回测并可视化
-    mybt = StockBacktest(df, initial_capital=100000, stock_list=stock_list)
+    mybt = StockBacktest(df, initial_capital=40000, stock_list=stock_list, start_time='2024-10-08', end_time='2025-05-20')
     mybt.run_backtest()
     
     # 使用可视化器显示结果
@@ -972,3 +992,7 @@ if __name__ == '__main__':
     # 使用方法2：仅可视化已有的日志文件
     # visualizer = BacktestVisualizer(log_file='backtest_log.txt', port=8080)
     # visualizer.visualize()
+
+    # 检查日志文件是否生成
+    print(f"日志文件存在: {os.path.exists('backtest_log.txt')}")
+    print(f"HTML报表存在: {os.path.exists('backtest_report.html')}")
