@@ -484,9 +484,15 @@ if __name__ == '__main__':
         clear_table = True
     
     # 获取沪深300指数数据
-    index_code = ['000001.SH','399006.SZ', '000016.SH', '000688.SH','000300.SH', '000905.SH']
-    for index in index_code:
-        get_index_data(index, start_date='2015-01-01', end_date='2025-05-19')
+    # index_code = ['000001.SH','399006.SZ', '000016.SH', '000688.SH','000300.SH', '000905.SH']
+    # for index in index_code:
+    #     get_index_data(index, start_date='2015-01-01', end_date='2025-05-19')
     
     # 获取股票数据（如果需要的话）
     # crawl_stock_data(clear_table=clear_table, stock_codes=['000001.XSHE'])
+
+
+    # 获取全部股票数据
+    crawl_stock_data()
+
+
