@@ -212,7 +212,7 @@ class StockBacktest:
                 # 持仓期指数收益率（从开始日到当前日）
                 index_profit_rate = (close_index/cost_index - 1) * 100
                 
-                self.log_message(f"指数{self.index_code}当天收益率: {index_return:.2f}%, 当日涨跌幅{pct_change_index:.2f}%, 持仓收益率: {index_profit_rate:.2f}%")
+                self.log_message(f"指数{self.index_code}当天收益率: {index_return:.2f}%, 当日涨跌幅{pct_change_index:.2f}%, 指数总收益率: {index_profit_rate:.2f}%")
                 
                 # 计算超额收益率
                 excess_return = returns - index_profit_rate
@@ -322,120 +322,274 @@ class BacktestVisualizer:
         """解析回测日志文件"""
         import re
         
+        # 定义更精确的正则表达式模式
         date_pattern = re.compile(r'\[(\d{4}-\d{2}-\d{2})\]')
-        strategy_return_pattern = re.compile(r'总收益率 ([-\d.]+)%')
-        # 修改指数收益率和指数信息的正则表达式
-        index_day_return_pattern = re.compile(r'指数.*?当天收益率: ([-\d.]+)%')
-        index_profit_pattern = re.compile(r'指数.*?持仓收益率: ([-\d.]+)%')
-        excess_return_pattern = re.compile(r'策略超额收益: ([-\d.]+)%')
-        trade_pattern = re.compile(r'\[(\d{4}-\d{2}-\d{2})\] (买入|卖出) ([\w.]+) (\d+) 股 @ ([\d.]+)')
-        daily_summary_pattern = re.compile(
-            r'当日总结: 总市值 ([\d.]+)，现金 ([\d.]+)，总资产 ([\d.]+)，当日盈亏 ([-\d.]+)，累计盈亏 ([-\d.]+)，总收益率 ([-\d.]+)%'
-        )
+        # 使用更灵活的正则表达式匹配不同格式的日志条目
+        strategy_return_pattern = re.compile(r'总收益率\s*([-\d.]+)%')
+        index_day_return_pattern = re.compile(r'指数.*?当天收益率:\s*([-\d.]+)%')
+        # 修改指数收益率模式，同时匹配"持仓收益率"和"指数总收益率"
+        index_profit_pattern = re.compile(r'指数.*?(持仓收益率|指数总收益率):\s*([-\d.]+)%')
+        excess_return_pattern = re.compile(r'策略超额收益:\s*([-\d.]+)%')
+        trade_pattern = re.compile(r'\[(\d{4}-\d{2}-\d{2})\]\s+(买入|卖出)\s+([\w.]+)\s+(\d+)\s+股\s+@\s+([\d.]+)')
         
-        current_date = None
+        # 使用更灵活的正则表达式匹配日终总结
+        # 允许数字之间有空格，允许标点符号前后有空格
+        daily_summary_pattern = re.compile(
+            r'当日总结:.*?总市值\s*([\d.]+).*?现金\s*([\d.]+).*?总资产\s*([\d.]+).*?当日盈亏\s*([-\d.]+).*?累计盈亏\s*([-\d.]+).*?总收益率\s*([-\d.]+)%'
+        )
         
         try:
             with open(self.log_file, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
+                content = f.read()
+                print(f"成功读取日志文件，大小为 {len(content)} 字节")
                 
-                # 预处理：将多行合并为一个日期的完整记录
+                # 预处理：删除所有空行和回测开始/结束的分隔符行
+                content = re.sub(r'\n\s*\n', '\n', content)
+                content = re.sub(r'=+\n', '', content)
+                content = re.sub(r'回测日志.*\n', '', content)
+                content = re.sub(r'回测结束\n', '', content)
+                
+                # 查找所有日期标记
+                all_dates = date_pattern.findall(content)
+                unique_dates = sorted(set(all_dates))
+                print(f"找到 {len(unique_dates)} 个唯一日期")
+                
+                # 使用日期模式分割日志内容为日期块
+                # 创建一个字典，用于存储每个日期的所有相关行
+                date_blocks_dict = {}
+                
+                # 初始化字典
+                for date in unique_dates:
+                    date_blocks_dict[date] = []
+                
+                # 按行处理内容，将每一行分配给相应的日期
+                current_date = None
+                for line in content.split('\n'):
+                    date_match = date_pattern.search(line)
+                    if date_match:
+                        current_date = date_match.group(1)
+                    
+                    if current_date and current_date in date_blocks_dict:
+                        date_blocks_dict[current_date].append(line)
+                
+                # 将字典转换为日期块列表
                 date_blocks = []
-                current_block = []
+                for date in unique_dates:
+                    if date in date_blocks_dict and date_blocks_dict[date]:
+                        date_block = '\n'.join(date_blocks_dict[date])
+                        date_blocks.append(date_block)
                 
-                for line in lines:
-                    if line.strip() == "":
-                        if current_block:
-                            date_blocks.append("".join(current_block))
-                            current_block = []
-                    elif line.startswith("====="):
-                        continue
-                    elif line.startswith("回测日志"):
-                        continue
-                    else:
-                        current_block.append(line)
+                print(f"处理了 {len(date_blocks)} 个日期块")
                 
-                # 添加最后一个块
-                if current_block:
-                    date_blocks.append("".join(current_block))
+                # 用于验证的数据收集
+                validation_data = []
+                
+                # 计数器，用于跟踪成功解析的日期块数量
+                successful_blocks = 0
+                failed_blocks = 0
                 
                 # 处理每个日期块
                 for block in date_blocks:
                     # 提取日期
                     date_match = date_pattern.search(block)
-                    if date_match:
-                        current_date = date_match.group(1)
-                    else:
+                    if not date_match:
+                        print(f"警告: 无法从日期块中提取日期: {block[:100]}...")
                         continue
+                        
+                    current_date = date_match.group(1)
                     
                     # 提取日终总结数据
                     summary_match = daily_summary_pattern.search(block)
                     if summary_match:
-                        market_value = float(summary_match.group(1))
-                        cash = float(summary_match.group(2))
-                        total_assets = float(summary_match.group(3))
-                        daily_profit = float(summary_match.group(4))
-                        cumulative_profit = float(summary_match.group(5))
-                        strategy_return = float(summary_match.group(6))
-                        
-                        # 添加到数据集
-                        self.data['dates'].append(current_date)
-                        self.data['strategy_returns'].append(strategy_return)
-                        self.data['market_value'].append(market_value)
-                        self.data['cash'].append(cash)
-                        self.data['total_assets'].append(total_assets)
-                        self.data['daily_profit'].append(daily_profit)
-                        self.data['cumulative_profit'].append(cumulative_profit)
-                        
-                        # 默认值，如果没有找到指数数据
-                        index_return = 0.0
-                        excess_return = 0.0
-                        
-                        # 尝试提取指数持仓收益率
-                        index_profit_match = index_profit_pattern.search(block)
-                        if index_profit_match:
-                            index_return = float(index_profit_match.group(1))
+                        try:
+                            market_value = float(summary_match.group(1))
+                            cash = float(summary_match.group(2))
+                            total_assets = float(summary_match.group(3))
+                            daily_profit = float(summary_match.group(4))
+                            cumulative_profit = float(summary_match.group(5))
+                            strategy_return = float(summary_match.group(6))
                             
-                        # 尝试提取超额收益
-                        excess_match = excess_return_pattern.search(block)
-                        if excess_match:
-                            excess_return = float(excess_match.group(1))
-                        else:
-                            # 如果没有直接的超额收益数据，计算差值
-                            excess_return = strategy_return - index_return
-                        
-                        self.data['index_returns'].append(index_return)
-                        self.data['excess_returns'].append(excess_return)
+                            # 添加到数据集
+                            self.data['dates'].append(current_date)
+                            self.data['strategy_returns'].append(strategy_return)
+                            self.data['market_value'].append(market_value)
+                            self.data['cash'].append(cash)
+                            self.data['total_assets'].append(total_assets)
+                            self.data['daily_profit'].append(daily_profit)
+                            self.data['cumulative_profit'].append(cumulative_profit)
+                            
+                            # 默认值，如果没有找到指数数据
+                            index_return = 0.0
+                            excess_return = 0.0
+                            
+                            # 尝试提取指数收益率（可能是"持仓收益率"或"指数总收益率"）
+                            index_profit_match = index_profit_pattern.search(block)
+                            if index_profit_match:
+                                index_return = float(index_profit_match.group(2))  # 注意：组索引从1变为2
+                                print(f"日期 {current_date} 的指数收益率类型: {index_profit_match.group(1)}, 值: {index_return}")
+                            else:
+                                print(f"警告: 日期 {current_date} 没有找到指数收益率数据")
+                                # 调试: 检查是否包含指数相关信息
+                                for line in block.split('\n'):
+                                    if '指数' in line and '收益率' in line:
+                                        print(f"包含指数信息的行: {line}")
+                                
+                            # 尝试提取超额收益
+                            excess_match = excess_return_pattern.search(block)
+                            if excess_match:
+                                excess_return = float(excess_match.group(1))
+                            else:
+                                # 如果没有直接的超额收益数据，计算差值
+                                excess_return = strategy_return - index_return
+                                print(f"日期 {current_date} 的超额收益率是计算得出的: {excess_return}")
+                            
+                            self.data['index_returns'].append(index_return)
+                            self.data['excess_returns'].append(excess_return)
+                            
+                            # 收集验证数据
+                            validation_data.append({
+                                'date': current_date,
+                                'strategy_return': strategy_return,
+                                'index_return': index_return,
+                                'excess_return': excess_return,
+                                'total_assets': total_assets,
+                                'daily_profit': daily_profit
+                            })
+                            
+                            successful_blocks += 1
+                        except (ValueError, IndexError) as e:
+                            print(f"解析日期 {current_date} 的数据时出错: {e}")
+                            print(f"匹配内容: {summary_match.group(0)}")
+                            failed_blocks += 1
+                            continue
+                    else:
+                        print(f"警告: 日期 {current_date} 没有找到日终总结数据")
+                        # 调试: 打印该日期块的内容，以便检查格式
+                        if '当日总结' in block:
+                            print(f"日期 {current_date} 包含'当日总结'但无法匹配正则表达式")
+                            # 提取包含"当日总结"的行
+                            for line in block.split('\n'):
+                                if '当日总结' in line:
+                                    print(f"当日总结行: {line}")
+                        failed_blocks += 1
                     
                     # 提取交易记录
+                    trade_count = 0
                     for trade_match in trade_pattern.finditer(block):
-                        trade_date = trade_match.group(1)
-                        action = trade_match.group(2)
-                        stock = trade_match.group(3)
-                        amount = int(trade_match.group(4))
-                        price = float(trade_match.group(5))
-                        
-                        self.data['trades'].append({
-                            'date': trade_date,
-                            'action': action,
-                            'stock': stock,
-                            'amount': amount,
-                            'price': price
-                        })
+                        try:
+                            trade_date = trade_match.group(1)
+                            action = trade_match.group(2)
+                            stock = trade_match.group(3)
+                            amount = int(trade_match.group(4))
+                            price = float(trade_match.group(5))
+                            
+                            self.data['trades'].append({
+                                'date': trade_date,
+                                'action': action,
+                                'stock': stock,
+                                'amount': amount,
+                                'price': price
+                            })
+                            trade_count += 1
+                        except (ValueError, IndexError) as e:
+                            print(f"解析交易记录时出错: {e}")
+                            continue
+                    
+                    if trade_count > 0:
+                        print(f"日期 {current_date} 解析到 {trade_count} 条交易记录")
             
+            if not self.data['dates']:
+                print("警告: 没有从日志文件中提取到任何日期数据")
+                return False
+                
             print(f"解析完成，获取了 {len(self.data['dates'])} 天的数据")
+            print(f"成功解析的日期块: {successful_blocks}, 失败的日期块: {failed_blocks}")
             
-            # 确保数据长度一致
+            # 确保所有数据列的长度一致
             min_length = min(len(self.data['dates']), len(self.data['strategy_returns']))
+            
+            # 截断所有数据列到相同长度
             self.data['dates'] = self.data['dates'][:min_length]
             self.data['strategy_returns'] = self.data['strategy_returns'][:min_length]
-            self.data['index_returns'] = self.data['index_returns'][:min_length] if len(self.data['index_returns']) >= min_length else self.data['index_returns'] + [0] * (min_length - len(self.data['index_returns']))
-            self.data['excess_returns'] = self.data['excess_returns'][:min_length] if len(self.data['excess_returns']) >= min_length else self.data['excess_returns'] + [0] * (min_length - len(self.data['excess_returns']))
+            self.data['market_value'] = self.data['market_value'][:min_length]
+            self.data['cash'] = self.data['cash'][:min_length]
+            self.data['total_assets'] = self.data['total_assets'][:min_length]
+            self.data['daily_profit'] = self.data['daily_profit'][:min_length]
+            self.data['cumulative_profit'] = self.data['cumulative_profit'][:min_length]
+            
+            # 处理可能长度不一致的数据列
+            if len(self.data['index_returns']) >= min_length:
+                self.data['index_returns'] = self.data['index_returns'][:min_length]
+            else:
+                self.data['index_returns'] = self.data['index_returns'] + [0] * (min_length - len(self.data['index_returns']))
+                
+            if len(self.data['excess_returns']) >= min_length:
+                self.data['excess_returns'] = self.data['excess_returns'][:min_length]
+            else:
+                self.data['excess_returns'] = self.data['excess_returns'] + [0] * (min_length - len(self.data['excess_returns']))
+            
+            # 将日期按照时间顺序排序
+            sorted_indices = sorted(range(len(self.data['dates'])), key=lambda i: self.data['dates'][i])
+            
+            # 按照排序后的索引重排所有数据
+            for key in self.data:
+                if key == 'trades':
+                    continue  # 交易记录不需要重排
+                self.data[key] = [self.data[key][i] for i in sorted_indices]
+            
+            # 验证解析出的数据与日志文件中的数据一致
+            self._validate_parsed_data(validation_data)
             
             return True
         except Exception as e:
             print(f"解析日志文件时出错: {e}")
+            import traceback
+            traceback.print_exc()
             return False
+            
+    def _validate_parsed_data(self, validation_data):
+        """验证解析出的数据与日志文件中的数据一致"""
+        if not validation_data:
+            print("警告: 没有验证数据可用")
+            return
+            
+        # 将验证数据按日期排序
+        validation_data.sort(key=lambda x: x['date'])
+        
+        # 检查数据长度是否一致
+        if len(validation_data) != len(self.data['dates']):
+            print(f"警告: 验证数据长度 ({len(validation_data)}) 与解析数据长度 ({len(self.data['dates'])}) 不一致")
+            # 找出哪些日期在验证数据中但不在解析数据中
+            validation_dates = [item['date'] for item in validation_data]
+            parsed_dates = self.data['dates']
+            missing_dates = [date for date in validation_dates if date not in parsed_dates]
+            extra_dates = [date for date in parsed_dates if date not in validation_dates]
+            if missing_dates:
+                print(f"缺少的日期: {missing_dates}")
+            if extra_dates:
+                print(f"多余的日期: {extra_dates}")
+            
+        # 检查每一天的数据是否一致
+        for i, item in enumerate(validation_data):
+            if i >= len(self.data['dates']):
+                break
+                
+            date = item['date']
+            if date != self.data['dates'][i]:
+                print(f"警告: 日期不匹配 - 验证数据: {date}, 解析数据: {self.data['dates'][i]}")
+                continue
+                
+            # 检查关键数据是否一致
+            if abs(item['strategy_return'] - self.data['strategy_returns'][i]) > 0.01:
+                print(f"警告: 日期 {date} 的策略收益率不匹配 - 验证数据: {item['strategy_return']}, 解析数据: {self.data['strategy_returns'][i]}")
+                
+            if abs(item['index_return'] - self.data['index_returns'][i]) > 0.01:
+                print(f"警告: 日期 {date} 的指数收益率不匹配 - 验证数据: {item['index_return']}, 解析数据: {self.data['index_returns'][i]}")
+                
+            if abs(item['excess_return'] - self.data['excess_returns'][i]) > 0.01:
+                print(f"警告: 日期 {date} 的超额收益率不匹配 - 验证数据: {item['excess_return']}, 解析数据: {self.data['excess_returns'][i]}")
+        
+        print("数据验证完成")
     
     def generate_html(self, output_file='backtest_report.html'):
         """生成HTML报表"""

@@ -23,11 +23,11 @@ class ChartGenerator:
             row_heights=[0.7, 0.3]
         )
         
-        # 添加累积收益率曲线
+        # 添加累积收益率曲线 - 直接使用日志中记录的收益率
         fig.add_trace(
             go.Scatter(
                 x=df['date'], 
-                y=df['cumulative_strategy'] * 100,
+                y=df['strategy_returns'],  # 直接使用原始收益率数据
                 name='策略收益',
                 line=dict(color='rgb(214, 39, 40)', width=2)  # 红色
             ),
@@ -37,7 +37,7 @@ class ChartGenerator:
         fig.add_trace(
             go.Scatter(
                 x=df['date'], 
-                y=df['cumulative_index'] * 100,
+                y=df['index_returns'],  # 直接使用原始指数收益率数据
                 name='指数收益',
                 line=dict(color='rgb(44, 160, 44)', width=2)  # 绿色
             ),
@@ -49,7 +49,7 @@ class ChartGenerator:
             go.Bar(
                 x=df['date'], 
                 y=df['excess_returns'],
-                name='每日超额收益',
+                name='超额收益',
                 marker_color='rgba(214, 39, 40, 0.5)'  # 红色
             ),
             row=2, col=1
@@ -282,6 +282,7 @@ class ChartGenerator:
             df['daily_profit'] = data['daily_profit']
             df['cumulative_profit'] = data['cumulative_profit']
         
+        # 确保数据按日期排序
         df = df.sort_values('date')
         
         # 直接使用日志中提取的收益率数据，不再进行计算
@@ -290,33 +291,43 @@ class ChartGenerator:
         df['cumulative_index'] = df['index_returns'] / 100
         
         # 计算每日收益率变化
-        if 'daily_profit' in df.columns:
-            df['daily_return_pct'] = df['daily_profit'] / df['total_assets'].shift(1) * 100
+        if 'daily_profit' in df.columns and 'total_assets' in df.columns:
+            # 使用当日盈亏除以前一日总资产计算日收益率
+            # 对于第一天，使用当日盈亏除以（总资产-当日盈亏）
+            first_day_assets = df.iloc[0]['total_assets'] - df.iloc[0]['daily_profit']
+            previous_assets = pd.Series([first_day_assets] + df['total_assets'].tolist()[:-1]).values
+            df['daily_return_pct'] = (df['daily_profit'] / previous_assets) * 100
             df['daily_return_pct'] = df['daily_return_pct'].fillna(0)
         else:
-            df['daily_return_pct'] = df['strategy_returns'].diff().fillna(0)
+            # 如果没有足够的资金数据，则使用收益率差分
+            df['daily_return_pct'] = df['strategy_returns'].diff().fillna(df['strategy_returns'].iloc[0])
         
         # 添加指数日收益率，如果有数据的话
         if not all(v == 0 for v in df['index_returns']):
-            df['daily_index_return'] = df['index_returns'].diff().fillna(0)
+            df['daily_index_return'] = df['index_returns'].diff().fillna(df['index_returns'].iloc[0])
         
         # 计算仓位比例
         if 'market_value' in df.columns and 'total_assets' in df.columns:
-            df['position_ratio'] = df['market_value'] / df['total_assets'] * 100
+            df['position_ratio'] = (df['market_value'] / df['total_assets']) * 100
         
         # 计算历史新高点和回撤
         if 'total_assets' in df.columns:
+            # 使用总资产计算回撤
             df['strategy_cummax'] = df['total_assets'].cummax()
             df['strategy_drawdown'] = (df['total_assets'] / df['strategy_cummax'] - 1) * 100
         else:
             # 使用日志中的收益率计算回撤
-            df['strategy_cummax'] = (1 + df['cumulative_strategy']).cummax()
-            df['strategy_drawdown'] = ((1 + df['cumulative_strategy']) / df['strategy_cummax'] - 1) * 100
+            # 注意：这里使用(1 + 收益率/100)来计算累积收益
+            df['strategy_cumulative_return'] = (1 + df['strategy_returns']/100)
+            df['strategy_cummax'] = df['strategy_cumulative_return'].cummax()
+            df['strategy_drawdown'] = (df['strategy_cumulative_return'] / df['strategy_cummax'] - 1) * 100
         
         # 如果有指数数据，计算指数回撤
-        if not all(v == 0 for v in df['cumulative_index']):
-            df['index_cummax'] = (1 + df['cumulative_index']).cummax()
-            df['index_drawdown'] = ((1 + df['cumulative_index']) / df['index_cummax'] - 1) * 100
+        if not all(v == 0 for v in df['index_returns']):
+            # 使用(1 + 收益率/100)来计算累积收益
+            df['index_cumulative_return'] = (1 + df['index_returns']/100)
+            df['index_cummax'] = df['index_cumulative_return'].cummax()
+            df['index_drawdown'] = (df['index_cumulative_return'] / df['index_cummax'] - 1) * 100
         
         return df
     
