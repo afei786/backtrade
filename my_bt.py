@@ -3,6 +3,8 @@ from datetime import datetime, timedelta
 import decimal
 from pysql import PySQL
 import os
+from chart_generator import ChartGenerator
+from html_generator import HTMLGenerator
 
 
 class StockBacktest:
@@ -112,7 +114,7 @@ class StockBacktest:
         """获取指数数据"""
         try:
             user_sql = PySQL(
-                host='localhost',
+                host='192.168.1.122',
                 user='afei',
                 password='sf123456',
                 database='stock',
@@ -194,16 +196,27 @@ class StockBacktest:
         returns = (total_value - self.initial_capital) / self.initial_capital * 100
         
         # 计算同期指数收益率
+        index_return = 0
+        index_profit_rate = 0
+        
         try:
             if not self.index_data.empty and self.current_date in self.index_data.index:
                 cost_index = self.index_data.loc[self.start_time, 'open']
-                open = self.index_data.loc[self.current_date, 'open']
-                close = self.index_data.loc[self.current_date, 'close']
-                pct_change = self.index_data.loc[self.current_date, 'pct_change']
-                profit_rate = (close/cost_index - 1) * 100
-                self.log_message(f"{cost_index, open, close, pct_change, profit_rate}")
-                self.log_message(f"指数{self.index_code}当天收益率: {(close/open - 1) * 100:.2f}%, 当日涨跌幅{pct_change:.2f}%, 持仓收益率: {profit_rate:.2f}%")
-                self.log_message(f"策略超额收益: {returns - profit_rate:.2f}%")
+                open_index = self.index_data.loc[self.current_date, 'open']
+                close_index = self.index_data.loc[self.current_date, 'close']
+                pct_change_index = self.index_data.loc[self.current_date, 'pct_change']
+                
+                # 当日指数收益率
+                index_return = (close_index/open_index - 1) * 100
+                
+                # 持仓期指数收益率（从开始日到当前日）
+                index_profit_rate = (close_index/cost_index - 1) * 100
+                
+                self.log_message(f"指数{self.index_code}当天收益率: {index_return:.2f}%, 当日涨跌幅{pct_change_index:.2f}%, 持仓收益率: {index_profit_rate:.2f}%")
+                
+                # 计算超额收益率
+                excess_return = returns - index_profit_rate
+                self.log_message(f"策略超额收益: {excess_return:.2f}%")
         except Exception as e:
             self.log_message(f"计算指数收益率时出错: {e}")
         
@@ -311,11 +324,13 @@ class BacktestVisualizer:
         
         date_pattern = re.compile(r'\[(\d{4}-\d{2}-\d{2})\]')
         strategy_return_pattern = re.compile(r'总收益率 ([-\d.]+)%')
-        index_return_pattern = re.compile(r'指数.*?同期收益率: ([-\d.]+)%')
+        # 修改指数收益率和指数信息的正则表达式
+        index_day_return_pattern = re.compile(r'指数.*?当天收益率: ([-\d.]+)%')
+        index_profit_pattern = re.compile(r'指数.*?持仓收益率: ([-\d.]+)%')
         excess_return_pattern = re.compile(r'策略超额收益: ([-\d.]+)%')
         trade_pattern = re.compile(r'\[(\d{4}-\d{2}-\d{2})\] (买入|卖出) ([\w.]+) (\d+) 股 @ ([\d.]+)')
         daily_summary_pattern = re.compile(
-            r'当日总结: 总市值 ([\d.]+)，现金 ([\d.]+)，总资产 ([\d.]+)，当日盈亏 ([\d.\-]+)，累计盈亏 ([\d.\-]+)，总收益率 ([-\d.]+)%'
+            r'当日总结: 总市值 ([\d.]+)，现金 ([\d.]+)，总资产 ([\d.]+)，当日盈亏 ([-\d.]+)，累计盈亏 ([-\d.]+)，总收益率 ([-\d.]+)%'
         )
         
         current_date = None
@@ -324,49 +339,76 @@ class BacktestVisualizer:
             with open(self.log_file, 'r', encoding='utf-8') as f:
                 lines = f.readlines()
                 
+                # 预处理：将多行合并为一个日期的完整记录
+                date_blocks = []
+                current_block = []
+                
                 for line in lines:
+                    if line.strip() == "":
+                        if current_block:
+                            date_blocks.append("".join(current_block))
+                            current_block = []
+                    elif line.startswith("====="):
+                        continue
+                    elif line.startswith("回测日志"):
+                        continue
+                    else:
+                        current_block.append(line)
+                
+                # 添加最后一个块
+                if current_block:
+                    date_blocks.append("".join(current_block))
+                
+                # 处理每个日期块
+                for block in date_blocks:
                     # 提取日期
-                    date_match = date_pattern.search(line)
+                    date_match = date_pattern.search(block)
                     if date_match:
                         current_date = date_match.group(1)
+                    else:
+                        continue
                     
-                    # 提取策略收益率
-                    if '总收益率' in line and current_date:
-                        return_match = strategy_return_pattern.search(line)
-                        if return_match:
-                            self.data['dates'].append(current_date)
-                            self.data['strategy_returns'].append(float(return_match.group(1)))
+                    # 提取日终总结数据
+                    summary_match = daily_summary_pattern.search(block)
+                    if summary_match:
+                        market_value = float(summary_match.group(1))
+                        cash = float(summary_match.group(2))
+                        total_assets = float(summary_match.group(3))
+                        daily_profit = float(summary_match.group(4))
+                        cumulative_profit = float(summary_match.group(5))
+                        strategy_return = float(summary_match.group(6))
                         
-                        # 提取每日资金情况（含盈亏）
-                        summary_match = daily_summary_pattern.search(line)
-                        if summary_match:
-                            market_value = float(summary_match.group(1))
-                            cash = float(summary_match.group(2))
-                            total_assets = float(summary_match.group(3))
-                            daily_profit = float(summary_match.group(4))
-                            cumulative_profit = float(summary_match.group(5))
-                            # 追加到对应字段
-                            self.data['market_value'].append(market_value)
-                            self.data['cash'].append(cash)
-                            self.data['total_assets'].append(total_assets)
-                            self.data['daily_profit'].append(daily_profit)
-                            self.data['cumulative_profit'].append(cumulative_profit)
-                    
-                    # 提取指数收益率
-                    if '指数' in line and '同期收益率' in line:
-                        index_match = index_return_pattern.search(line)
-                        if index_match:
-                            self.data['index_returns'].append(float(index_match.group(1)))
-                    
-                    # 提取超额收益
-                    if '策略超额收益' in line:
-                        excess_match = excess_return_pattern.search(line)
+                        # 添加到数据集
+                        self.data['dates'].append(current_date)
+                        self.data['strategy_returns'].append(strategy_return)
+                        self.data['market_value'].append(market_value)
+                        self.data['cash'].append(cash)
+                        self.data['total_assets'].append(total_assets)
+                        self.data['daily_profit'].append(daily_profit)
+                        self.data['cumulative_profit'].append(cumulative_profit)
+                        
+                        # 默认值，如果没有找到指数数据
+                        index_return = 0.0
+                        excess_return = 0.0
+                        
+                        # 尝试提取指数持仓收益率
+                        index_profit_match = index_profit_pattern.search(block)
+                        if index_profit_match:
+                            index_return = float(index_profit_match.group(1))
+                            
+                        # 尝试提取超额收益
+                        excess_match = excess_return_pattern.search(block)
                         if excess_match:
-                            self.data['excess_returns'].append(float(excess_match.group(1)))
+                            excess_return = float(excess_match.group(1))
+                        else:
+                            # 如果没有直接的超额收益数据，计算差值
+                            excess_return = strategy_return - index_return
+                        
+                        self.data['index_returns'].append(index_return)
+                        self.data['excess_returns'].append(excess_return)
                     
                     # 提取交易记录
-                    trade_match = trade_pattern.search(line)
-                    if trade_match:
+                    for trade_match in trade_pattern.finditer(block):
                         trade_date = trade_match.group(1)
                         action = trade_match.group(2)
                         stock = trade_match.group(3)
@@ -382,6 +424,14 @@ class BacktestVisualizer:
                         })
             
             print(f"解析完成，获取了 {len(self.data['dates'])} 天的数据")
+            
+            # 确保数据长度一致
+            min_length = min(len(self.data['dates']), len(self.data['strategy_returns']))
+            self.data['dates'] = self.data['dates'][:min_length]
+            self.data['strategy_returns'] = self.data['strategy_returns'][:min_length]
+            self.data['index_returns'] = self.data['index_returns'][:min_length] if len(self.data['index_returns']) >= min_length else self.data['index_returns'] + [0] * (min_length - len(self.data['index_returns']))
+            self.data['excess_returns'] = self.data['excess_returns'][:min_length] if len(self.data['excess_returns']) >= min_length else self.data['excess_returns'] + [0] * (min_length - len(self.data['excess_returns']))
+            
             return True
         except Exception as e:
             print(f"解析日志文件时出错: {e}")
@@ -389,526 +439,35 @@ class BacktestVisualizer:
     
     def generate_html(self, output_file='backtest_report.html'):
         """生成HTML报表"""
-        import pandas as pd
-        import plotly.graph_objects as go
-        import numpy as np
-        from plotly.subplots import make_subplots
-        
         if not self.data['dates']:
             print("没有数据可以生成报表")
             return False
         
-        # 将数据转换为DataFrame
-        df = pd.DataFrame({
-            'date': pd.to_datetime(self.data['dates']),
-            'strategy_returns': self.data['strategy_returns'],
-            'index_returns': self.data['index_returns'] if len(self.data['index_returns']) == len(self.data['dates']) else [0] * len(self.data['dates']),
-            'excess_returns': self.data['excess_returns'] if len(self.data['excess_returns']) == len(self.data['dates']) else [0] * len(self.data['dates'])
-        })
+        print("开始生成HTML报表...")
         
-        # 如果有资金数据，添加到DataFrame
-        if len(self.data['cash']) == len(self.data['dates']):
-            df['cash'] = self.data['cash']
-            df['market_value'] = self.data['market_value']
-            df['total_assets'] = self.data['total_assets']
+        # 使用ChartGenerator处理数据并生成图表
+        df = ChartGenerator.prepare_data(self.data)
         
-        df = df.sort_values('date')
+        # 创建各种图表
+        print("生成各种图表...")
+        fig1 = ChartGenerator.create_cumulative_return_chart(df)
+        fig2 = ChartGenerator.create_daily_return_chart(df)
+        fig3 = ChartGenerator.create_asset_chart(df)
+        fig4 = ChartGenerator.create_drawdown_chart(df)
         
-        # 1. 创建累积收益率对比图和超额收益图
-        fig1 = make_subplots(
-            rows=2, cols=1, 
-            shared_xaxes=True,
-            subplot_titles=('累积收益率对比', '超额收益率'),
-            vertical_spacing=0.12,
-            row_heights=[0.7, 0.3]
-        )
+        # 生成图表HTML
+        chart_html = ChartGenerator.generate_chart_html(fig1, fig2, fig3, fig4)
         
-        # 计算累积收益率
-        df['cumulative_strategy'] = (1 + df['strategy_returns'] / 100).cumprod() - 1
-        df['cumulative_index'] = (1 + df['index_returns'] / 100).cumprod() - 1
+        # 计算性能指标
+        metrics = ChartGenerator.calculate_performance_metrics(df)
         
-        # 添加累积收益率曲线
-        fig1.add_trace(
-            go.Scatter(
-                x=df['date'], 
-                y=df['cumulative_strategy'] * 100,
-                name='策略收益',
-                line=dict(color='rgb(0, 100, 80)', width=2)
-            ),
-            row=1, col=1
-        )
-        
-        fig1.add_trace(
-            go.Scatter(
-                x=df['date'], 
-                y=df['cumulative_index'] * 100,
-                name='指数收益',
-                line=dict(color='rgb(205, 12, 24)', width=2)
-            ),
-            row=1, col=1
-        )
-        
-        # 添加超额收益率
-        fig1.add_trace(
-            go.Bar(
-                x=df['date'], 
-                y=df['excess_returns'],
-                name='每日超额收益',
-                marker_color='rgba(0, 0, 255, 0.5)'
-            ),
-            row=2, col=1
-        )
-        
-        # 更新布局
-        fig1.update_layout(
-            title='回测结果分析 - 累积收益对比',
-            template='plotly_white',
-            hovermode='x unified',
-            height=500,
-            legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=1.02,
-                xanchor="right",
-                x=1
-            )
-        )
-        
-        fig1.update_yaxes(title_text='收益率(%)', row=1, col=1)
-        fig1.update_yaxes(title_text='超额收益(%)', row=2, col=1)
-        
-        # 2. 创建每日收益率图表
-        fig2 = go.Figure()
-        
-        fig2.add_trace(
-            go.Scatter(
-                x=df['date'], 
-                y=df['strategy_returns'],
-                name='策略日收益率',
-                line=dict(color='rgb(0, 100, 80)', width=2)
-            )
-        )
-        
-        fig2.add_trace(
-            go.Scatter(
-                x=df['date'], 
-                y=df['index_returns'],
-                name='指数日收益率',
-                line=dict(color='rgb(205, 12, 24)', width=2)
-            )
-        )
-        
-        # 添加零线
-        fig2.add_shape(
-            type="line",
-            x0=df['date'].min(),
-            y0=0,
-            x1=df['date'].max(),
-            y1=0,
-            line=dict(color="black", width=1, dash="dash")
-        )
-        
-        fig2.update_layout(
-            title='每日收益率',
-            template='plotly_white',
-            hovermode='x unified',
-            height=400,
-            yaxis_title='日收益率(%)',
-            legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=1.02,
-                xanchor="right",
-                x=1
-            )
-        )
-        
-        # 3. 资金曲线图表
-        fig3 = None
-        if 'total_assets' in df.columns:
-            fig3 = make_subplots(
-                rows=1, cols=1,
-                specs=[[{"secondary_y": True}]]
-            )
-            
-            # 添加总资产曲线
-            fig3.add_trace(
-                go.Scatter(
-                    x=df['date'], 
-                    y=df['total_assets'],
-                    name='总资产',
-                    line=dict(color='rgb(31, 119, 180)', width=2)
-                )
-            )
-            
-            # 添加现金曲线
-            fig3.add_trace(
-                go.Scatter(
-                    x=df['date'], 
-                    y=df['cash'],
-                    name='现金',
-                    line=dict(color='rgb(148, 103, 189)', width=2, dash='dot'),
-                    fill='tozeroy',
-                    fillcolor='rgba(148, 103, 189, 0.1)'
-                )
-            )
-            
-            # 添加市值曲线
-            fig3.add_trace(
-                go.Scatter(
-                    x=df['date'], 
-                    y=df['market_value'],
-                    name='持仓市值',
-                    line=dict(color='rgb(44, 160, 44)', width=2, dash='dot'),
-                    fill='tozeroy',
-                    fillcolor='rgba(44, 160, 44, 0.1)'
-                )
-            )
-            
-            # 在右轴添加仓位比例
-            df['position_ratio'] = df['market_value'] / df['total_assets'] * 100
-            
-            fig3.add_trace(
-                go.Scatter(
-                    x=df['date'], 
-                    y=df['position_ratio'],
-                    name='仓位比例(%)',
-                    line=dict(color='rgb(214, 39, 40)', width=2)
-                ),
-                secondary_y=True
-            )
-            
-            fig3.update_layout(
-                title='资金曲线与仓位分析',
-                template='plotly_white',
-                hovermode='x unified',
-                height=400,
-                legend=dict(
-                    orientation="h",
-                    yanchor="bottom",
-                    y=1.02,
-                    xanchor="right",
-                    x=1
-                )
-            )
-            
-            fig3.update_yaxes(title_text='金额', secondary_y=False)
-            fig3.update_yaxes(title_text='仓位比例(%)', secondary_y=True)
-        
-        # 4. 回撤分析图表
-        fig4 = go.Figure()
-        
-        # 计算历史新高点
-        df['strategy_peak'] = df['cumulative_strategy'].cummax()
-        df['index_peak'] = df['cumulative_index'].cummax()
-        
-        # 计算回撤
-        df['strategy_drawdown'] = (df['cumulative_strategy'] - df['strategy_peak']) / df['strategy_peak'] * 100
-        df['index_drawdown'] = (df['cumulative_index'] - df['index_peak']) / df['index_peak'] * 100
-        
-        # 添加策略回撤曲线
-        fig4.add_trace(
-            go.Scatter(
-                x=df['date'], 
-                y=df['strategy_drawdown'],
-                name='策略回撤',
-                line=dict(color='rgb(214, 39, 40)', width=2),
-                fill='tozeroy',
-                fillcolor='rgba(214, 39, 40, 0.1)'
-            )
-        )
-        
-        # 添加指数回撤曲线
-        fig4.add_trace(
-            go.Scatter(
-                x=df['date'], 
-                y=df['index_drawdown'],
-                name='指数回撤',
-                line=dict(color='rgb(31, 119, 180)', width=2),
-                fill='tozeroy',
-                fillcolor='rgba(31, 119, 180, 0.1)'
-            )
-        )
-        
-        fig4.update_layout(
-            title='回撤分析',
-            template='plotly_white',
-            hovermode='x unified',
-            height=400,
-            yaxis_title='回撤比例(%)',
-            legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=1.02,
-                xanchor="right",
-                x=1
-            )
-        )
-        
-        # 5. 计算更多指标
-        # 年化收益率
-        days = (df['date'].max() - df['date'].min()).days
-        if days > 0:
-            annual_strategy_return = ((1 + df['cumulative_strategy'].iloc[-1]) ** (365 / days) - 1) * 100
-            annual_index_return = ((1 + df['cumulative_index'].iloc[-1]) ** (365 / days) - 1) * 100
-        else:
-            annual_strategy_return = df['cumulative_strategy'].iloc[-1] * 100
-            annual_index_return = df['cumulative_index'].iloc[-1] * 100
-        
-        # 最大回撤
-        max_strategy_drawdown = df['strategy_drawdown'].min()
-        max_index_drawdown = df['index_drawdown'].min()
-        
-        # 夏普比率 (假设无风险利率为3%)
-        risk_free_rate = 3
-        daily_risk_free = (1 + risk_free_rate/100) ** (1/365) - 1
-        
-        # 计算超额日收益率
-        df['excess_daily_return'] = df['strategy_returns'] / 100 - daily_risk_free
-        
-        # 计算夏普比率
-        if len(df) > 1:
-            excess_returns_mean = df['excess_daily_return'].mean() * 365
-            excess_returns_std = df['excess_daily_return'].std() * np.sqrt(365)
-            if excess_returns_std != 0:
-                sharpe_ratio = excess_returns_mean / excess_returns_std
-            else:
-                sharpe_ratio = 0
-        else:
-            sharpe_ratio = 0
-        
-        # 盈亏比
-        winning_days = df[df['strategy_returns'] > 0]
-        losing_days = df[df['strategy_returns'] < 0]
-        
-        if len(winning_days) > 0 and len(losing_days) > 0:
-            avg_win = winning_days['strategy_returns'].mean()
-            avg_loss = abs(losing_days['strategy_returns'].mean())
-            win_loss_ratio = avg_win / avg_loss if avg_loss != 0 else float('inf')
-            win_rate = len(winning_days) / len(df) * 100
-        else:
-            win_loss_ratio = 0
-            win_rate = 0 if len(df) == 0 else (len(winning_days) / len(df) * 100)
-        
-        # 生成HTML报表
+        # 使用HTMLGenerator生成完整的HTML报表
+        print("生成最终HTML报表... [99%]")
         with open(output_file, 'w', encoding='utf-8') as f:
-            # CSS样式
-            html_header = '''
-            <!DOCTYPE html>
-            <html>
-            <head>
-                <meta charset="UTF-8">
-                <title>回测结果分析</title>
-                <style>
-                    body {
-                        font-family: Arial, sans-serif;
-                        margin: 0;
-                        padding: 20px;
-                        background-color: #f5f5f5;
-                    }
-                    .container {
-                        max-width: 1200px;
-                        margin: 0 auto;
-                        background-color: white;
-                        padding: 20px;
-                        border-radius: 5px;
-                        box-shadow: 0 0 10px rgba(0,0,0,0.1);
-                    }
-                    h1, h2 {
-                        color: #333;
-                    }
-                    table {
-                        width: 100%;
-                        border-collapse: collapse;
-                        margin: 20px 0;
-                    }
-                    th, td {
-                        padding: 10px;
-                        border: 1px solid #ddd;
-                        text-align: left;
-                    }
-                    th {
-                        background-color: #f2f2f2;
-                    }
-                    tr:nth-child(even) {
-                        background-color: #f9f9f9;
-                    }
-                    .buy {
-                        color: #009900;
-                    }
-                    .sell {
-                        color: #cc0000;
-                    }
-                    .metrics {
-                        display: flex;
-                        flex-wrap: wrap;
-                        margin-bottom: 20px;
-                    }
-                    .metric-box {
-                        background-color: #f2f2f2;
-                        border-radius: 5px;
-                        padding: 15px;
-                        margin: 10px;
-                        flex: 1;
-                        min-width: 200px;
-                        box-shadow: 0 0 5px rgba(0,0,0,0.05);
-                    }
-                    .metric-title {
-                        font-size: 14px;
-                        color: #666;
-                        margin-bottom: 5px;
-                    }
-                    .metric-value {
-                        font-size: 24px;
-                        font-weight: bold;
-                        color: #333;
-                    }
-                    .positive {
-                        color: #009900;
-                    }
-                    .negative {
-                        color: #cc0000;
-                    }
-                    .chart-container {
-                        margin-bottom: 30px;
-                    }
-                </style>
-            </head>
-            <body>
-                <div class="container">
-                    <h1>回测结果分析</h1>
-            '''
-            
-            # 计算关键指标
-            final_strategy_return = df['cumulative_strategy'].iloc[-1] * 100
-            final_index_return = df['cumulative_index'].iloc[-1] * 100
-            final_excess_return = final_strategy_return - final_index_return
-            
-            # 添加关键指标
-            metrics_html = f'''
-            <div class="metrics">
-                <div class="metric-box">
-                    <div class="metric-title">策略总收益</div>
-                    <div class="metric-value {'positive' if final_strategy_return >= 0 else 'negative'}">{final_strategy_return:.2f}%</div>
-                </div>
-                <div class="metric-box">
-                    <div class="metric-title">指数总收益</div>
-                    <div class="metric-value {'positive' if final_index_return >= 0 else 'negative'}">{final_index_return:.2f}%</div>
-                </div>
-                <div class="metric-box">
-                    <div class="metric-title">超额收益</div>
-                    <div class="metric-value {'positive' if final_excess_return >= 0 else 'negative'}">{final_excess_return:.2f}%</div>
-                </div>
-                <div class="metric-box">
-                    <div class="metric-title">年化收益率</div>
-                    <div class="metric-value {'positive' if annual_strategy_return >= 0 else 'negative'}">{annual_strategy_return:.2f}%</div>
-                </div>
-            </div>
-            <div class="metrics">
-                <div class="metric-box">
-                    <div class="metric-title">最大回撤</div>
-                    <div class="metric-value negative">{max_strategy_drawdown:.2f}%</div>
-                </div>
-                <div class="metric-box">
-                    <div class="metric-title">夏普比率</div>
-                    <div class="metric-value {'positive' if sharpe_ratio > 0 else 'negative'}">{sharpe_ratio:.2f}</div>
-                </div>
-                <div class="metric-box">
-                    <div class="metric-title">胜率</div>
-                    <div class="metric-value {'positive' if win_rate > 50 else 'negative'}">{win_rate:.2f}%</div>
-                </div>
-                <div class="metric-box">
-                    <div class="metric-title">盈亏比</div>
-                    <div class="metric-value {'positive' if win_loss_ratio > 1 else 'negative'}">{win_loss_ratio:.2f}</div>
-                </div>
-            </div>
-            '''
-            
-            # 将plotly图表转换为HTML
-            import plotly.io as pio
-            
-            chart_html = '''
-            <div class="chart-container">
-                <h2>累积收益与超额收益</h2>
-            '''
-            chart_html += pio.to_html(fig1, include_plotlyjs='cdn', full_html=False)
-            chart_html += '''
-            </div>
-            
-            <div class="chart-container">
-                <h2>每日收益率</h2>
-            '''
-            chart_html += pio.to_html(fig2, include_plotlyjs=False, full_html=False)
-            chart_html += '''
-            </div>
-            '''
-            
-            # 添加资金曲线图(如果有数据)
-            if fig3:
-                chart_html += '''
-                <div class="chart-container">
-                    <h2>资金曲线与仓位分析</h2>
-                '''
-                chart_html += pio.to_html(fig3, include_plotlyjs=False, full_html=False)
-                chart_html += '''
-                </div>
-                '''
-            
-            # 添加回撤分析图
-            chart_html += '''
-            <div class="chart-container">
-                <h2>回撤分析</h2>
-            '''
-            chart_html += pio.to_html(fig4, include_plotlyjs=False, full_html=False)
-            chart_html += '''
-            </div>
-            '''
-            
-            # 交易记录表格
-            trades_df = pd.DataFrame(self.data['trades'])
-            if not trades_df.empty:
-                trades_df = trades_df.sort_values('date', ascending=False)
-                trades_html = '''
-                <h2>交易记录</h2>
-                <table>
-                    <tr>
-                        <th>日期</th>
-                        <th>操作</th>
-                        <th>股票</th>
-                        <th>数量</th>
-                        <th>价格</th>
-                        <th>金额</th>
-                    </tr>
-                '''
-                
-                for _, row in trades_df.iterrows():
-                    action_class = 'buy' if row['action'] == '买入' else 'sell'
-                    amount = row['amount'] * row['price']
-                    trades_html += f'''
-                    <tr>
-                        <td>{row['date']}</td>
-                        <td class="{action_class}">{row['action']}</td>
-                        <td>{row['stock']}</td>
-                        <td>{row['amount']}</td>
-                        <td>{row['price']:.2f}</td>
-                        <td>{amount:.2f}</td>
-                    </tr>
-                    '''
-                
-                trades_html += '</table>'
-            else:
-                trades_html = '<h2>没有交易记录</h2>'
-            
-            # 完整HTML
-            html = html_header + metrics_html + chart_html + trades_html + '''
-                </div>
-            </body>
-            </html>
-            '''
-            
+            html = HTMLGenerator.generate_complete_html(chart_html, metrics, self.data['trades'])
             f.write(html)
             
-        print(f"HTML报表已生成: {output_file}")
+        print("HTML报表已生成: 100% 完成!")
         return True
     
     def start_server(self, html_file='backtest_report.html'):
@@ -959,7 +518,7 @@ class BacktestVisualizer:
 if __name__ == '__main__':
     # 从数据库获取数据
     user_sql = PySQL(
-        host='localhost',
+        host='192.168.1.122',
         user='afei',
         password='sf123456',
         database='stock',
