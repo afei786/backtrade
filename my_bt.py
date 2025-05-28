@@ -26,8 +26,10 @@ class StockBacktest:
         self.initial_capital = initial_capital
         self.cash = decimal.Decimal(initial_capital)
         self.balance = decimal.Decimal(initial_capital)
-        self.history = []
-        
+        self.result = {}
+        # {"":{'daily_profit_rate': 0, 'total_profit_rate': 0, 
+        #  'total_value': 0, 'cash': 0, 'market_cap': 0, 'index_daily_profit_rate': 0, 'index_total_profit_rate': 0}}
+
         # 设置回测时间范围
         self.start_time = pd.to_datetime(start_time) if start_time else self.data['trade_date'].min()
         self.end_time = pd.to_datetime(end_time) if end_time else self.data['trade_date'].max()
@@ -88,7 +90,6 @@ class StockBacktest:
             self.stocks_position[stock]['cost_price'] = (current_cost + new_cost) / total_position
 
         self.log_message(f"买入 {stock} {amount} 股 @ {price:.2f}，总费用 {cost:.2f}，剩余资金 {self.cash:.2f}")
-        self.history.append(('BUY', self.current_date, stock, price, amount))
         return True
 
     def sell(self, stock: str, price: float, amount: int):
@@ -105,7 +106,6 @@ class StockBacktest:
         self.cash += decimal.Decimal(revenue)
         
         self.log_message(f"卖出 {stock} {amount} 股 @ {price:.2f}，获利 {profit:.2f}，剩余资金 {self.cash:.2f}")
-        self.history.append(('SELL', self.current_date, stock, price, amount))
         return True
 
     def _get_index_data(self):
@@ -197,6 +197,7 @@ class StockBacktest:
         try:
             if not self.index_data.empty and self.current_date in self.index_data.index:
                 cost_index = self.index_data.loc[self.start_time, 'open']
+<<<<<<< HEAD
                 open = self.index_data.loc[self.current_date, 'open']
                 close = self.index_data.loc[self.current_date, 'close']
                 pct_change = self.index_data.loc[self.current_date, 'pct_change']
@@ -204,6 +205,22 @@ class StockBacktest:
                 self.log_message(f"{cost_index, open, close, pct_change, profit_rate}")
                 self.log_message(f"指数{self.index_code}当天收益率: {(close/open - 1) * 100:.2f}%, 当日涨跌幅{pct_change:.2f}%, 持仓收益率: {profit_rate:.2f}%")
                 self.log_message(f"策略超额收益: {returns - profit_rate:.2f}%")
+=======
+                open_index = self.index_data.loc[self.current_date, 'open']
+                close_index = self.index_data.loc[self.current_date, 'close']
+                pct_change_index = self.index_data.loc[self.current_date, 'pct_change']
+                
+                # 当日指数收益率
+                index_return = (close_index/open_index - 1) * 100
+                
+                # 持仓期指数收益率（从开始日到当前日）
+                index_profit_rate = (close_index/cost_index - 1) * 100
+                
+                self.log_message(f"指数{self.index_code}当天收益率: {index_return:.2f}%, 当日涨跌幅{pct_change_index:.2f}%, 指数总收益率: {index_profit_rate:.2f}%")
+                
+                self.result[self.current_date] = {'total_profit_rate': returns, 'total_value': total_value, 'cash': self.cash, 'market_cap': market_cap, 
+                                                 'index_total_profit_rate': index_profit_rate}
+>>>>>>> f8742ab074b6fc93f104d3bb0ea2dc0f9f0007b5
         except Exception as e:
             self.log_message(f"计算指数收益率时出错: {e}")
         
@@ -245,13 +262,11 @@ class StockBacktest:
             self.open_price = stock_data['open'].values[0]
             self.close_price = stock_data['close'].values[0]
 
-            self.strategy(stock)
-            
-            
+            self.strategy(stock)          
     
     def strategy(self,stock):
         """
-        重写策略
+        策略
         """
         # 示例策略：持仓不足100股时买入
         if self.stocks_position[stock]['available'] < 100:
@@ -263,8 +278,6 @@ class StockBacktest:
             if available_shares > 0:
                 self.sell(stock, self.close_price, available_shares)
 
-
-
     def run_backtest(self):
         """运行回测过程"""
         while self.current_date <= self.end_time:
@@ -272,17 +285,20 @@ class StockBacktest:
         
         self.close_log()
 
-    def get_history(self):
-        """获取交易历史记录"""
-        return self.history
-
     def close_log(self):
         """关闭日志文件"""
         self.log.write("===========================================\n")
         self.log.write("回测结束\n")
         self.log.close()
 
+        # 将字典转为DataFrame，并将外层键作为一列
+        df = pd.DataFrame.from_dict(self.result, orient='index').reset_index()
+        df.columns = ['trade_date', 'total_profit_rate', 'total_value', 'cash', 'market_cap', 'index_total_profit_rate']
 
+        df.to_csv("output.csv", index=False, encoding='utf-8')
+
+
+<<<<<<< HEAD
 class BacktestVisualizer:
     def __init__(self, log_file='backtest_log.txt', port=8080):
         """
@@ -954,6 +970,8 @@ class BacktestVisualizer:
                 print("HTML报表生成失败")
         else:
             print("日志文件解析失败")
+=======
+>>>>>>> f8742ab074b6fc93f104d3bb0ea2dc0f9f0007b5
 
 
 if __name__ == '__main__':
@@ -970,7 +988,11 @@ if __name__ == '__main__':
     
     # 创建IN查询的占位符
     placeholders = ', '.join(['%s'] * len(stock_list))
+<<<<<<< HEAD
     where_clause = f'trade_date > "2024-09-30" AND trade_date < "2025-05-20" AND stock_code IN ({placeholders})'
+=======
+    where_clause = f'trade_date > "2024-10-01" AND trade_date < "2025-05-20" AND stock_code IN ({placeholders})'
+>>>>>>> f8742ab074b6fc93f104d3bb0ea2dc0f9f0007b5
     
     stocks_data = user_sql.select('stock_daily_k',
                     columns=['stock_code','trade_date','open','high','low','close','change_value','pct_change'],
@@ -982,12 +1004,16 @@ if __name__ == '__main__':
     df = df[['stock_code', 'trade_date', 'open', 'high', 'low', 'close', 'change_value','pct_change']]
     
     # 使用方法1：运行回测并可视化
+<<<<<<< HEAD
     mybt = StockBacktest(df, initial_capital=40000, stock_list=stock_list, start_time='2024-10-08', end_time='2025-05-20')
+=======
+    mybt = StockBacktest(df, initial_capital=35000, stock_list=stock_list)
+>>>>>>> f8742ab074b6fc93f104d3bb0ea2dc0f9f0007b5
     mybt.run_backtest()
     
     # 使用可视化器显示结果
-    visualizer = BacktestVisualizer(log_file='backtest_log.txt', port=8080)
-    visualizer.visualize()
+    # visualizer = BacktestVisualizer(log_file='backtest_log.txt', port=8080)
+    # visualizer.visualize()
     
     # 使用方法2：仅可视化已有的日志文件
     # visualizer = BacktestVisualizer(log_file='backtest_log.txt', port=8080)
