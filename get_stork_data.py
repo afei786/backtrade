@@ -542,13 +542,6 @@ if __name__ == '__main__':
     # 获取股票数据（如果需要的话）
     # crawl_stock_data(clear_table=clear_table, stock_codes=['000001.XSHE'])
 
-<<<<<<< HEAD
     # 获取股票1分钟K线数据
     crawl_stock_data(table_name='stock_min_k', table_type='stock', klt=1)
-=======
-
-    # 获取全部股票数据
-    crawl_stock_data()
-
->>>>>>> f8742ab074b6fc93f104d3bb0ea2dc0f9f0007b5
 
