@@ -4,8 +4,6 @@ import time
 import random
 import sys
 from datetime import datetime
-from pysql import PySQL
-
 
 def get_stock_k_data(international_code, start_date='2023-01-01', end_date='2025-5-16', klt=101, max_retries=3):
     """
@@ -75,7 +73,7 @@ def get_stock_k_data(international_code, start_date='2023-01-01', end_date='2025
     # 如果所有重试都失败了
     raise ValueError(f"抓取股票 {international_code} K线数据失败")
 
-def get_index_k_data(index_code, start_date='2023-01-01', end_date='2025-5-26', klt=101, max_retries=3):
+def get_index_k_data(index_code, start_date='2023-01-01', end_date='2025-5-16', klt=101, max_retries=3):
     """
     获取指数K线数据
     index_code: 指数代码，如：000300.SH（沪深300）
@@ -178,39 +176,24 @@ def clear_checkpoint():
     except:
         pass
 
-def get_existing_data(user_sql, table_name='stock_daily_k'):
+def get_existing_data(user_sql):
     """获取已存在的数据记录"""
     existing_data = {}
     try:
-        # 获取表结构信息，判断是用stock_code还是index_code
-        user_sql.cursor.execute(f"DESCRIBE {table_name}")
-        columns = user_sql.cursor.fetchall()
-        id_field = "stock_code"
-        for col in columns:
-            if col['Field'] == 'index_code':
-                id_field = 'index_code'
-                break
-        
-        print(f"正在获取{table_name}表已有数据信息...")
-        sql = f"SELECT {id_field}, COUNT(*) as count FROM {table_name} GROUP BY {id_field}"
+        print("正在获取已有数据信息...")
+        sql = "SELECT stock_code, COUNT(*) as count FROM stock_daily_k GROUP BY stock_code"
         user_sql.cursor.execute(sql)
         results = user_sql.cursor.fetchall()
         for row in results:
-            existing_data[row[id_field]] = row['count']
-        print(f"已有 {len(existing_data)} 条数据记录")
+            existing_data[row['stock_code']] = row['count']
+        print(f"已有 {len(existing_data)} 只股票的数据")
     except Exception as e:
         print(f"获取已有数据失败: {e}")
         print("继续执行，但可能会有重复数据")
     return existing_data
 
-def process_stock_data(records, stock_code=None, klt=101):
-    """处理股票数据，确保数据格式正确
-    
-    Args:
-        records: DataFrame的行数据
-        stock_code: 股票代码
-        klt: K线类型，1=1分钟, 5=5分钟, 15=15分钟, 30=30分钟, 60=60分钟, 101=日K, 102=周K, 103=月K
-    """
+def process_stock_data(records):
+    """处理股票数据，确保数据格式正确"""
     processed_records = []
     for row in records:
         # 处理amplitude
@@ -224,15 +207,9 @@ def process_stock_data(records, stock_code=None, klt=101):
         # 处理turnover_rate
         turnover_rate = process_decimal_field(row.turnover_rate)
         
-        # 处理时间格式，对于分钟级别K线数据，转换正确的时间格式
-        trade_date = row.date
-        if klt in [1, 5, 15, 30, 60] and len(trade_date) > 10:  # 如果是分钟K线且包含时间信息
-            # 将格式从 "2023-05-26 10:30" 转换为标准格式
-            trade_date = trade_date.replace(' ', 'T')
-        
         processed_records.append({
-            "stock_code": stock_code,  # 使用传入的股票代码，而不是从记录中获取
-            "trade_date": trade_date,
+            "stock_code": row.Index,
+            "trade_date": row.date,
             "open": row.open,
             "high": row.high,
             "low": row.low,
@@ -256,39 +233,18 @@ def process_decimal_field(value, max_value=9999.99):
             return "0.00"
     return "0.00"
 
-def batch_insert_records(user_sql, records, table_name='stock_daily_k'):
+def batch_insert_records(user_sql, records):
     """批量插入记录到数据库"""
     if not records:
         return 0
-    
+        
     try:
-        # 获取表结构信息，确定是用stock_code还是index_code
-        user_sql.cursor.execute(f"DESCRIBE {table_name}")
-        columns = user_sql.cursor.fetchall()
-        has_stock_code = False
-        has_index_code = False
-        
-        for col in columns:
-            if col['Field'] == 'stock_code':
-                has_stock_code = True
-            elif col['Field'] == 'index_code':
-                has_index_code = True
-        
-        # 如果记录中有stock_code但表中没有，需要转换为index_code
-        if 'stock_code' in records[0] and not has_stock_code and has_index_code:
-            for record in records:
-                record['index_code'] = record.pop('stock_code')
-        # 如果记录中有index_code但表中没有，需要转换为stock_code
-        elif 'index_code' in records[0] and not has_index_code and has_stock_code:
-            for record in records:
-                record['stock_code'] = record.pop('index_code')
-                
         columns = list(records[0].keys())
         columns_str = ", ".join([f"`{k}`" for k in columns])
         placeholders = ", ".join(["%s"] * len(columns))
         values = [[data[column] for column in columns] for data in records]
         
-        sql = f"INSERT IGNORE INTO `{table_name}` ({columns_str}) VALUES ({placeholders})"
+        sql = f"INSERT IGNORE INTO `stock_daily_k` ({columns_str}) VALUES ({placeholders})"
         
         if not user_sql.connection or not user_sql.connection.is_connected():
             user_sql.connect()
@@ -296,21 +252,15 @@ def batch_insert_records(user_sql, records, table_name='stock_daily_k'):
         user_sql.cursor.executemany(sql, values)
         user_sql.connection.commit()
         affected_rows = user_sql.cursor.rowcount
-        print(f"成功批量插入 {affected_rows} 行数据到表 {table_name}（忽略了 {len(records) - affected_rows} 行重复数据）")
+        print(f"成功批量插入 {affected_rows} 行数据到表 stock_daily_k（忽略了 {len(records) - affected_rows} 行重复数据）")
         return affected_rows
     except Exception as e:
         user_sql.connection.rollback()
         print(f"批量插入失败: {e}")
         raise
 
-def process_index_data(df, index_code, klt=101):
-    """处理指数数据，确保数据格式正确
-    
-    Args:
-        df: 数据框
-        index_code: 指数代码
-        klt: K线类型，1=1分钟, 5=5分钟, 15=15分钟, 30=30分钟, 60=60分钟, 101=日K, 102=周K, 103=月K
-    """
+def process_index_data(df, index_code):
+    """处理指数数据，确保数据格式正确"""
     records = []
     for row in df.itertuples():
         # 处理amplitude
@@ -322,15 +272,9 @@ def process_index_data(df, index_code, klt=101):
         pct_change = process_decimal_field(row.pct_change)
         turnover_rate = process_decimal_field(row.turnover_rate)
         
-        # 处理时间格式
-        trade_date = row.date
-        if klt in [1, 5, 15, 30, 60] and len(trade_date) > 10:  # 如果是分钟K线且包含时间信息
-            # 将格式从 "2023-05-26 10:30" 转换为标准格式
-            trade_date = trade_date.replace(' ', 'T')
-        
         records.append({
             "index_code": index_code,
-            "trade_date": trade_date,
+            "trade_date": row.date,
             "open": row.open,
             "high": row.high,
             "low": row.low,
@@ -343,25 +287,12 @@ def process_index_data(df, index_code, klt=101):
         })
     return records
 
-def create_table(user_sql, table_name='index_daily_k', table_type='index'):
-    """创建数据表
-    
-    Args:
-        user_sql: 数据库连接对象
-        table_name: 表名
-        table_type: 表类型，'index'表示指数表，'stock'表示股票表
-    """
-    # 根据表类型选择主键字段名
-    id_field = "index_code" if table_type == 'index' else "stock_code"
-    
-    # 确定交易日期字段类型，如果是分钟级表，则使用DATETIME
-    is_min_table = 'min' in table_name.lower()
-    date_type = "DATETIME" if is_min_table else "DATE"
-    
-    create_table_sql = f"""
-    CREATE TABLE IF NOT EXISTS {table_name} (
-        {id_field} VARCHAR(20),
-        trade_date {date_type},
+def create_index_table(user_sql):
+    """创建指数数据表"""
+    create_table_sql = """
+    CREATE TABLE IF NOT EXISTS index_daily_k (
+        index_code VARCHAR(20),
+        trade_date DATE,
         open DECIMAL(10,2),
         high DECIMAL(10,2),
         low DECIMAL(10,2),
@@ -371,41 +302,53 @@ def create_table(user_sql, table_name='index_daily_k', table_type='index'):
         pct_change DECIMAL(6,2),
         vol BIGINT,
         turnover_rate DECIMAL(6,2),
-        PRIMARY KEY ({id_field}, trade_date)
+        PRIMARY KEY (index_code, trade_date)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
     """
     user_sql.cursor.execute(create_table_sql)
     user_sql.connection.commit()
 
-def batch_insert_index_records(user_sql, records, table_name='index_daily_k'):
+def batch_insert_index_records(user_sql, records):
     """批量插入指数记录到数据库"""
-    # 直接调用通用的批量插入函数
-    return batch_insert_records(user_sql, records, table_name)
+    if not records:
+        return 0
+        
+    try:
+        columns = list(records[0].keys())
+        columns_str = ", ".join([f"`{k}`" for k in columns])
+        placeholders = ", ".join(["%s"] * len(columns))
+        values = [[data[column] for column in columns] for data in records]
+        
+        sql = f"INSERT IGNORE INTO `index_daily_k` ({columns_str}) VALUES ({placeholders})"
+        
+        if not user_sql.connection or not user_sql.connection.is_connected():
+            user_sql.connect()
+            
+        user_sql.cursor.executemany(sql, values)
+        user_sql.connection.commit()
+        affected_rows = user_sql.cursor.rowcount
+        print(f"成功批量插入 {affected_rows} 行数据到表 index_daily_k（忽略了 {len(records) - affected_rows} 行重复数据）")
+        return affected_rows
+    except Exception as e:
+        user_sql.connection.rollback()
+        print(f"批量插入失败: {e}")
+        raise
 
-def crawl_stock_data(stock_codes=None, clear_table=False, table_name='stock_daily_k', table_type='stock', klt=101):
-    """抓取股票数据的主函数
-    
-    Args:
-        stock_codes: 股票代码列表
-        clear_table: 是否清空表
-        table_name: 表名
-        table_type: 表类型
-        klt: K线类型，1=1分钟, 5=5分钟, 15=15分钟, 30=30分钟, 60=60分钟, 101=日K, 102=周K, 103=月K
-    """
+def crawl_stock_data(stock_codes=None, clear_table=False):
+    """抓取股票数据的主函数"""
     # 初始化数据库连接
     user_sql = init_database()
-    create_table(user_sql, table_name, table_type)
     
     # 如果需要清空表
     if clear_table:
-        user_sql.delete(table_name, '1=1')
-        print(f"已清空 {table_name} 表")
+        user_sql.delete('stock_daily_k', '1=1')
+        print("已清空 stock_daily_k 表")
     
     # 获取断点续传信息
     last_processed = load_checkpoint()
     
     # 获取已存在数据
-    existing_data = get_existing_data(user_sql, table_name)
+    existing_data = get_existing_data(user_sql)
     
     # 如果没有指定股票代码，则获取所有股票
     if not stock_codes:
@@ -445,7 +388,7 @@ def crawl_stock_data(stock_codes=None, clear_table=False, table_name='stock_dail
             save_checkpoint(stock_code)
             
             # 抓取数据
-            df = get_stock_k_data(stock_code, start_date='2015-05-19', end_date='2025-05-19', klt=klt)
+            df = get_stock_k_data(stock_code, start_date='2015-05-19', end_date='2025-05-19', klt=101)
             
             if df.empty:
                 print(f"股票 {stock_code} 没有K线数据，跳过")
@@ -454,11 +397,11 @@ def crawl_stock_data(stock_codes=None, clear_table=False, table_name='stock_dail
                 continue
             
             # 处理数据
-            records = process_stock_data(df.itertuples(), stock_code, klt)
+            records = process_stock_data(df.itertuples())
             
             # 批量插入
             if records:
-                batch_insert_records(user_sql, records, table_name)
+                batch_insert_records(user_sql, records)
             
             # 更新进度
             processed_count += 1
@@ -501,29 +444,29 @@ def crawl_stock_data(stock_codes=None, clear_table=False, table_name='stock_dail
     print(f"跳过数量: {skipped_count}")
     print(f"总耗时: {int(hours)}小时{int(minutes)}分{int(seconds)}秒")
 
-def get_index_data(index_code='000300.SH', start_date='2015-01-01', end_date='2025-05-19', table_name='index_daily_k', klt=101):
+def get_index_data(index_code='000300.SH', start_date='2015-01-01', end_date='2025-05-19'):
     """获取指数数据的主函数"""
     # 初始化数据库连接
     user_sql = init_database()
     
     # 创建指数数据表（如果不存在）
-    create_table(user_sql, table_name, 'index')
+    create_index_table(user_sql)
     
     try:
         # 获取数据
         print(f"正在获取 {index_code} 的K线数据...")
-        df = get_index_k_data(index_code, start_date=start_date, end_date=end_date, klt=klt)
+        df = get_index_k_data(index_code, start_date=start_date, end_date=end_date, klt=101)
         
         if df.empty:
             print(f"指数 {index_code} 没有K线数据")
             return
         
         # 处理数据
-        records = process_index_data(df, index_code, klt)
+        records = process_index_data(df, index_code)
         
         # 批量插入
         if records:
-            batch_insert_index_records(user_sql, records, table_name)
+            batch_insert_index_records(user_sql, records)
             print(f"成功获取并保存 {index_code} 的 {len(records)} 条K线数据")
     
     except Exception as e:
@@ -533,6 +476,12 @@ def get_index_data(index_code='000300.SH', start_date='2015-01-01', end_date='20
             user_sql.connection.close()
 
 if __name__ == '__main__':
+    from pysql import PySQL
+    
+    # 解析命令行参数
+    clear_table = False
+    if len(sys.argv) > 1 and sys.argv[1] == '--clear':
+        clear_table = True
     
     # 获取沪深300指数数据
     # index_code = ['000001.SH','399006.SZ', '000016.SH', '000688.SH','000300.SH', '000905.SH']
@@ -542,6 +491,8 @@ if __name__ == '__main__':
     # 获取股票数据（如果需要的话）
     # crawl_stock_data(clear_table=clear_table, stock_codes=['000001.XSHE'])
 
-    # 获取股票1分钟K线数据
-    crawl_stock_data(table_name='stock_min_k', table_type='stock', klt=1)
+
+    # 获取全部股票数据
+    crawl_stock_data()
+
 
