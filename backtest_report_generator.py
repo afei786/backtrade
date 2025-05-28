@@ -15,8 +15,38 @@ import os
 import sys
 import warnings
 import uuid
+import json
 
 warnings.filterwarnings('ignore')
+
+def resample_time_series(df, max_points=500):
+    """
+    对时间序列数据进行降采样，减少数据点数量
+    
+    参数:
+        df (pandas.DataFrame): 包含时间序列数据的DataFrame
+        max_points (int): 最大数据点数量
+        
+    返回:
+        pandas.DataFrame: 降采样后的DataFrame
+    """
+    # 获取数据点数量
+    n_points = len(df)
+    
+    # 如果数据点数量小于等于最大点数，则不需要降采样
+    if n_points <= max_points:
+        return df
+    
+    # 计算采样间隔
+    sample_step = int(np.ceil(n_points / max_points))
+    
+    # 确保起始点和结束点被包含
+    sampled_indices = list(range(0, n_points, sample_step))
+    if (n_points - 1) not in sampled_indices:
+        sampled_indices.append(n_points - 1)
+    
+    # 返回降采样后的数据
+    return df.iloc[sampled_indices].copy()
 
 def calculate_max_drawdown(values):
     """
@@ -128,31 +158,35 @@ def load_data(csv_file):
         # 将日期列转换为日期时间格式
         df['trade_date'] = pd.to_datetime(df['trade_date'])
         
-        # 计算每日收益率
-        df['daily_strategy_return'] = df['total_profit_rate'].pct_change().fillna(0)
+        # 确保数据按日期排序
+        df = df.sort_values('trade_date')
+        
+        # 计算每日收益率 - 使用当日与前一日的比值计算收益率
+        # 将百分比格式转换为小数进行计算
+        if 'total_profit_rate' in df.columns:
+            # 使用前值和后值分别计算，避免精度问题
+            prev_values = df['total_profit_rate'].shift(1)
+            # 第一天的收益率设为0
+            df.loc[df.index[0], 'daily_strategy_return'] = 0
+            # 其他天的收益率 = (今天值 - 昨天值) / (100 + 昨天值) 
+            mask = df.index > df.index[0]
+            df.loc[mask, 'daily_strategy_return'] = (df.loc[mask, 'total_profit_rate'] - prev_values[mask]) / (100 + prev_values[mask])
+        else:
+            df['daily_strategy_return'] = 0
         
         # 计算每日指数收益率
-        df['daily_index_return'] = df['index_total_profit_rate'].pct_change().fillna(0)
-        
-        # 计算每日超额收益率
-        df['daily_excess_return'] = df['daily_strategy_return'] - df['daily_index_return']
-        
-        # 计算累积收益率
-        df['cumulative_strategy_return'] = (1 + df['daily_strategy_return']).cumprod() - 1
-        df['cumulative_index_return'] = (1 + df['daily_index_return']).cumprod() - 1
-        df['cumulative_excess_return'] = df['cumulative_strategy_return'] - df['cumulative_index_return']
+        if 'index_total_profit_rate' in df.columns:
+            prev_values = df['index_total_profit_rate'].shift(1)
+            df.loc[df.index[0], 'daily_index_return'] = 0
+            mask = df.index > df.index[0]
+            df.loc[mask, 'daily_index_return'] = (df.loc[mask, 'index_total_profit_rate'] - prev_values[mask]) / (100 + prev_values[mask])
+        else:
+            df['daily_index_return'] = 0
         
         # 假设初始投资为10000元，计算每个时间点的总价值
         initial_investment = 10000
         df['strategy_value'] = initial_investment * (1 + df['total_profit_rate'] / 100)
         df['index_value'] = initial_investment * (1 + df['index_total_profit_rate'] / 100)
-        
-        # 计算基于价值的回撤
-        df['strategy_peak'] = df['strategy_value'].cummax()
-        df['strategy_drawdown'] = (df['strategy_peak'] - df['strategy_value']) / df['strategy_peak'] * 100
-        
-        df['index_peak'] = df['index_value'].cummax()
-        df['index_drawdown'] = (df['index_peak'] - df['index_value']) / df['index_peak'] * 100
         
         return df
     
@@ -208,97 +242,6 @@ def calculate_metrics(df):
     
     return metrics
 
-def create_cumulative_returns_chart(df):
-    """
-    创建累积收益与超额收益图表
-    
-    参数:
-        df (pandas.DataFrame): 处理后的数据
-    
-    返回:
-        str: 图表HTML代码
-    """
-    # 创建子图
-    fig = make_subplots(
-        rows=2, cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.1,
-        row_heights=[0.7, 0.3],
-        subplot_titles=("累积收益率对比", "超额收益率")
-    )
-    
-    # 添加策略收益曲线
-    fig.add_trace(
-        go.Scatter(
-            x=df['trade_date'],
-            y=df['total_profit_rate'],
-            name="策略收益",
-            line=dict(color='rgb(0, 100, 80)', width=2)
-        ),
-        row=1, col=1
-    )
-    
-    # 添加指数收益曲线
-    fig.add_trace(
-        go.Scatter(
-            x=df['trade_date'],
-            y=df['index_total_profit_rate'],
-            name="指数收益",
-            line=dict(color='rgb(205, 12, 24)', width=2)
-        ),
-        row=1, col=1
-    )
-    
-    # 添加每日超额收益柱状图
-    fig.add_trace(
-        go.Bar(
-            x=df['trade_date'],
-            y=df['daily_excess_return'] * 100,  # 转换为百分比
-            name="每日超额收益",
-            marker_color='rgba(0, 0, 255, 0.5)'
-        ),
-        row=2, col=1
-    )
-    
-    # 更新布局
-    fig.update_layout(
-        height=600,
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1
-        ),
-        hovermode="x unified"
-    )
-    
-    # 更新y轴标题
-    fig.update_yaxes(title_text="累积收益率", row=1, col=1)
-    fig.update_yaxes(title_text="每日超额收益率(%)", row=2, col=1)
-    
-    # 生成唯一ID
-    chart_id = str(uuid.uuid4())
-    
-    # 转换为HTML
-    chart_html = f"""<div>
-                        <script type="text/javascript">window.PlotlyConfig = {{MathJaxConfig: 'local'}};</script>
-        <script charset="utf-8" src="https://cdn.plot.ly/plotly-3.0.1.min.js"></script>
-                <div id="{chart_id}" class="plotly-graph-div" style="height:500px; width:100%;"></div>
-            <script type="text/javascript">
-                window.PLOTLYENV=window.PLOTLYENV || {{}};
-                if (document.getElementById("{chart_id}")) {{
-                    Plotly.newPlot(
-                        "{chart_id}",
-                        {fig.to_json()},
-                        {{"responsive": true}}
-                    )
-                }};
-            </script>
-        </div>"""
-    
-    return chart_html
-
 def create_daily_returns_chart(df):
     """
     创建每日收益率图表
@@ -307,146 +250,145 @@ def create_daily_returns_chart(df):
         df (pandas.DataFrame): 处理后的数据
     
     返回:
-        str: 图表HTML代码
+        tuple: (data, layout) 图表数据和布局配置的JSON字符串
     """
-    # 创建图表
-    fig = go.Figure()
+    # 对数据进行降采样处理
+    sampled_df = resample_time_series(df)
     
-    # 添加策略每日收益率曲线
-    fig.add_trace(
-        go.Scatter(
-            x=df['trade_date'],
-            y=df['daily_strategy_return'] * 100,  # 转换为百分比
-            name="策略日收益率",
-            line=dict(color='rgb(0, 100, 80)', width=2)
-        )
-    )
+    # 创建图表数据
+    data = [
+        # 策略每日收益率曲线
+        {
+            "type": "scatter",
+            "x": sampled_df['trade_date'].dt.strftime('%Y-%m-%d').tolist(),
+            "y": (sampled_df['daily_strategy_return'] * 100).tolist(),  # 转换为百分比
+            "name": "策略日收益率",
+            "line": {"color": 'rgb(0, 100, 80)', "width": 2},
+            "hovertemplate": '%{x}<br>%{y:.2f}%<extra></extra>'  # 简化悬停信息
+        },
+        # 指数每日收益率曲线
+        {
+            "type": "scatter",
+            "x": sampled_df['trade_date'].dt.strftime('%Y-%m-%d').tolist(),
+            "y": (sampled_df['daily_index_return'] * 100).tolist(),  # 转换为百分比
+            "name": "指数日收益率",
+            "line": {"color": 'rgb(205, 12, 24)', "width": 2},
+            "hovertemplate": '%{x}<br>%{y:.2f}%<extra></extra>'  # 简化悬停信息
+        }
+    ]
     
-    # 添加指数每日收益率曲线
-    fig.add_trace(
-        go.Scatter(
-            x=df['trade_date'],
-            y=df['daily_index_return'] * 100,  # 转换为百分比
-            name="指数日收益率",
-            line=dict(color='rgb(205, 12, 24)', width=2)
-        )
-    )
+    # 创建布局配置
+    layout = {
+        "title": "每日收益率",
+        "height": 400,
+        "width": "100%",  # 使用100%宽度
+        "autosize": True,  # 启用自动大小调整
+        "margin": {  # 设置边距
+            "l": 50,   # 左边距
+            "r": 30,   # 右边距
+            "t": 50,   # 上边距
+            "b": 50    # 下边距
+        },
+        "legend": {
+            "orientation": "h",
+            "yanchor": "bottom",
+            "y": 1.02,
+            "xanchor": "right",
+            "x": 1
+        },
+        "hovermode": "x unified",
+        "yaxis": {"title": "日收益率(%)"},
+        "dragmode": False,  # 禁用拖拽模式
+        "modebar": {
+            "remove": ["lasso2d", "select2d", "autoScale2d", "toggleSpikelines"]  # 移除不必要的工具按钮
+        },
+        # 添加零线
+        "shapes": [
+            {
+                "type": "line",
+                "x0": sampled_df['trade_date'].min().strftime('%Y-%m-%d'),
+                "x1": sampled_df['trade_date'].max().strftime('%Y-%m-%d'),
+                "y0": 0, "y1": 0,
+                "line": {"color": "black", "dash": "dash", "width": 1}
+            }
+        ]
+    }
     
-    # 添加零线
-    fig.add_shape(
-        type="line",
-        x0=df['trade_date'].min(),
-        x1=df['trade_date'].max(),
-        y0=0, y1=0,
-        line=dict(color="black", dash="dash", width=1)
-    )
-    
-    # 更新布局
-    fig.update_layout(
-        title="每日收益率",
-        height=400,
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1
-        ),
-        hovermode="x unified",
-        yaxis=dict(title="日收益率(%)")
-    )
-    
-    # 生成唯一ID
-    chart_id = str(uuid.uuid4())
-    
-    # 转换为HTML
-    chart_html = f"""<div>
-                            <div id="{chart_id}" class="plotly-graph-div" style="height:400px; width:100%;"></div>
-            <script type="text/javascript">
-                window.PLOTLYENV=window.PLOTLYENV || {{}};
-                if (document.getElementById("{chart_id}")) {{
-                    Plotly.newPlot(
-                        "{chart_id}",
-                        {fig.to_json()},
-                        {{"responsive": true}}
-                    )
-                }};
-            </script>
-        </div>"""
-    
-    return chart_html
+    return data, layout
 
-def create_drawdown_chart(df):
+def create_total_returns_chart(df):
     """
-    创建回撤分析图表
+    创建策略总收益率和指数总收益率图表
     
     参数:
         df (pandas.DataFrame): 处理后的数据
     
     返回:
-        str: 图表HTML代码
+        tuple: (data, layout) 图表数据和布局配置的JSON字符串
     """
-    # 创建图表
-    fig = go.Figure()
+    # 对数据进行降采样处理
+    sampled_df = resample_time_series(df)
     
-    # 添加策略回撤曲线
-    fig.add_trace(
-        go.Scatter(
-            x=df['trade_date'],
-            y=df['strategy_drawdown'],
-            name="策略回撤",
-            fill='tozeroy',
-            fillcolor='rgba(214, 39, 40, 0.1)',
-            line=dict(color='rgb(214, 39, 40)', width=2)
-        )
-    )
+    # 创建图表数据
+    data = [
+        # 策略总收益率曲线
+        {
+            "type": "scatter",
+            "x": sampled_df['trade_date'].dt.strftime('%Y-%m-%d').tolist(),
+            "y": sampled_df['total_profit_rate'].tolist(),  # 已经是百分比格式
+            "name": "策略总收益率",
+            "line": {"color": 'rgb(0, 100, 80)', "width": 2},
+            "hovertemplate": '%{x}<br>%{y:.2f}%<extra></extra>'  # 简化悬停信息
+        },
+        # 指数总收益率曲线
+        {
+            "type": "scatter",
+            "x": sampled_df['trade_date'].dt.strftime('%Y-%m-%d').tolist(),
+            "y": sampled_df['index_total_profit_rate'].tolist(),  # 已经是百分比格式
+            "name": "指数总收益率",
+            "line": {"color": 'rgb(205, 12, 24)', "width": 2},
+            "hovertemplate": '%{x}<br>%{y:.2f}%<extra></extra>'  # 简化悬停信息
+        }
+    ]
     
-    # 添加指数回撤曲线
-    fig.add_trace(
-        go.Scatter(
-            x=df['trade_date'],
-            y=df['index_drawdown'],
-            name="指数回撤",
-            fill='tozeroy',
-            fillcolor='rgba(31, 119, 180, 0.1)',
-            line=dict(color='rgb(31, 119, 180)', width=2)
-        )
-    )
+    # 创建布局配置
+    layout = {
+        "title": "累计收益率",
+        "height": 400,
+        "width": "100%",  # 使用100%宽度
+        "autosize": True,  # 启用自动大小调整
+        "margin": {  # 设置边距
+            "l": 50,   # 左边距
+            "r": 30,   # 右边距
+            "t": 50,   # 上边距
+            "b": 50    # 下边距
+        },
+        "legend": {
+            "orientation": "h",
+            "yanchor": "bottom",
+            "y": 1.02,
+            "xanchor": "right",
+            "x": 1
+        },
+        "hovermode": "x unified",
+        "yaxis": {"title": "累计收益率(%)"},
+        "dragmode": False,  # 禁用拖拽模式
+        "modebar": {
+            "remove": ["lasso2d", "select2d", "autoScale2d", "toggleSpikelines"]  # 移除不必要的工具按钮
+        },
+        # 添加零线
+        "shapes": [
+            {
+                "type": "line",
+                "x0": sampled_df['trade_date'].min().strftime('%Y-%m-%d'),
+                "x1": sampled_df['trade_date'].max().strftime('%Y-%m-%d'),
+                "y0": 0, "y1": 0,
+                "line": {"color": "black", "dash": "dash", "width": 1}
+            }
+        ]
+    }
     
-    # 更新布局
-    fig.update_layout(
-        title="回撤分析",
-        height=400,
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1
-        ),
-        hovermode="x unified",
-        yaxis=dict(title="回撤比例(%)")
-    )
-    
-    # 生成唯一ID
-    chart_id = str(uuid.uuid4())
-    
-    # 转换为HTML
-    chart_html = f"""<div>
-                            <div id="{chart_id}" class="plotly-graph-div" style="height:400px; width:100%;"></div>
-            <script type="text/javascript">
-                window.PLOTLYENV=window.PLOTLYENV || {{}};
-                if (document.getElementById("{chart_id}")) {{
-                    Plotly.newPlot(
-                        "{chart_id}",
-                        {fig.to_json()},
-                        {{"responsive": true}}
-                    )
-                }};
-            </script>
-        </div>"""
-    
-    return chart_html
+    return data, layout
 
 def create_trade_records_table(df):
     """
@@ -516,14 +458,11 @@ def generate_html_report(df, metrics, output_file="backtest_report.html"):
         metrics (dict): 回测指标
         output_file (str): 输出文件路径
     """
-    # 创建累积收益图表
-    cumulative_returns_chart = create_cumulative_returns_chart(df)
+    # 创建每日收益率图表数据
+    daily_data, daily_layout = create_daily_returns_chart(df)
     
-    # 创建每日收益率图表
-    daily_returns_chart = create_daily_returns_chart(df)
-    
-    # 创建回撤分析图表
-    drawdown_chart = create_drawdown_chart(df)
+    # 创建策略总收益率和指数总收益率图表数据
+    total_data, total_layout = create_total_returns_chart(df)
     
     # 创建交易记录表格
     trade_records_table = create_trade_records_table(df)
@@ -612,7 +551,92 @@ def generate_html_report(df, metrics, output_file="backtest_report.html"):
                     .chart-container {{
                         margin-bottom: 30px;
                     }}
+                    /* 添加懒加载样式 */
+                    .lazy-chart {{
+                        min-height: 400px;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                    }}
+                    .loading {{
+                        text-align: center;
+                        padding: 20px;
+                        color: #666;
+                    }}
+                    .loading:after {{
+                        content: " ⏳";
+                        animation: dots 1s steps(5, end) infinite;
+                    }}
+                    @keyframes dots {{
+                        0%, 20% {{
+                            color: rgba(0,0,0,0);
+                            text-shadow: .25em 0 0 rgba(0,0,0,0), .5em 0 0 rgba(0,0,0,0);
+                        }}
+                        40% {{
+                            color: #666;
+                            text-shadow: .25em 0 0 rgba(0,0,0,0), .5em 0 0 rgba(0,0,0,0);
+                        }}
+                        60% {{
+                            text-shadow: .25em 0 0 #666, .5em 0 0 rgba(0,0,0,0);
+                        }}
+                        80%, 100% {{
+                            text-shadow: .25em 0 0 #666, .5em 0 0 #666;
+                        }}
+                    }}
                 </style>
+                <!-- 引入Plotly.js -->
+                <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+                <!-- 添加懒加载脚本 -->
+                <script>
+                    // 检测元素是否在视口中
+                    function isElementInViewport(el) {{
+                        var rect = el.getBoundingClientRect();
+                        return (
+                            rect.top >= 0 &&
+                            rect.left >= 0 &&
+                            rect.bottom <= (window.innerHeight || document.documentElement.clientHeight) &&
+                            rect.right <= (window.innerWidth || document.documentElement.clientWidth)
+                        );
+                    }}
+                    
+                    // 懒加载图表
+                    function lazyLoadCharts() {{
+                        var lazyCharts = document.querySelectorAll('.lazy-chart:not(.loaded)');
+                        
+                        lazyCharts.forEach(function(chartDiv) {{
+                            if (isElementInViewport(chartDiv)) {{
+                                // 标记为已加载
+                                chartDiv.classList.add('loaded');
+                                
+                                // 获取图表数据和配置
+                                var chartData = JSON.parse(chartDiv.getAttribute('data-chart'));
+                                var chartLayout = JSON.parse(chartDiv.getAttribute('data-layout'));
+                                var chartId = chartDiv.getAttribute('id');
+                                
+                                // 清除加载提示
+                                chartDiv.innerHTML = '';
+                                
+                                // 渲染图表
+                                Plotly.newPlot(
+                                    chartId,
+                                    chartData,
+                                    chartLayout,
+                                    {{"responsive": true, "staticPlot": false, "displayModeBar": "hover"}}
+                                );
+                            }}
+                        }});
+                    }}
+                    
+                    // 页面加载完成后初始化
+                    document.addEventListener('DOMContentLoaded', function() {{
+                        // 初始检查
+                        setTimeout(lazyLoadCharts, 100);
+                        
+                        // 滚动时检查
+                        window.addEventListener('scroll', lazyLoadCharts);
+                        window.addEventListener('resize', lazyLoadCharts);
+                    }});
+                </script>
             </head>
             <body>
                 <div class="container">
@@ -656,18 +680,17 @@ def generate_html_report(df, metrics, output_file="backtest_report.html"):
             </div>
             
             <div class="chart-container">
-                <h2>累积收益与超额收益</h2>
-            {cumulative_returns_chart}
-            </div>
-            
-            <div class="chart-container">
                 <h2>每日收益率</h2>
-            {daily_returns_chart}
+                <div id="daily_chart" class="lazy-chart" data-chart='{json.dumps(daily_data)}' data-layout='{json.dumps(daily_layout)}'>
+                    <div class="loading">图表加载中</div>
+                </div>
             </div>
             
             <div class="chart-container">
-                <h2>回撤分析</h2>
-            {drawdown_chart}
+                <h2>累计收益率</h2>
+                <div id="total_chart" class="lazy-chart" data-chart='{json.dumps(total_data)}' data-layout='{json.dumps(total_layout)}'>
+                    <div class="loading">图表加载中</div>
+                </div>
             </div>
             
             {trade_records_table}

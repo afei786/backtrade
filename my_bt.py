@@ -298,7 +298,7 @@ if __name__ == '__main__':
         port=3306
     )
     user_sql.connect()
-    stock_list = ['002594.XSHE']
+    stock_list = ['002594.XSHE','603881.XSHG']
     
     # 创建IN查询的占位符
     placeholders = ', '.join(['%s'] * len(stock_list))
@@ -314,7 +314,7 @@ if __name__ == '__main__':
     df = df[['stock_code', 'trade_date', 'open', 'high', 'low', 'close', 'change_value','pct_change']]
     
     # 使用方法1：运行回测并可视化
-    mybt = StockBacktest(df, initial_capital=35000, stock_list=stock_list)
+    mybt = StockBacktest(df, initial_capital=100000, stock_list=stock_list)
     mybt.run_backtest()
     
     # 使用可视化器显示结果
