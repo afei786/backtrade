@@ -2,11 +2,13 @@ import pandas as pd
 from datetime import datetime, timedelta
 import decimal
 from pysql import PySQL
+from tqdm import tqdm  # 导入tqdm库
 
 
 class StockBacktest:
     def __init__(self, data: pd.DataFrame, initial_capital: float = 100000, log_file: str = 'backtest_log.txt',
-                 start_time: str = None, end_time: str = None, stock_list: list = None, index_code: str = '000300.SH'):
+                 start_time: str = None, end_time: str = None, stock_list: list = None, index_code: str = '000300.SH',
+                 show_progress: bool = True):
         """
         初始化回测类
         :param data: 包含股票数据的DataFrame，应该有stock_code, trade_date, open, high, low, close等列
@@ -16,6 +18,7 @@ class StockBacktest:
         :param end_time: 回测结束时间，格式：'YYYY-MM-DD'
         :param stock_list: 股票代码列表
         :param index_code: 对比指数代码，默认为沪深300
+        :param show_progress: 是否显示进度条，默认为True
         """
         # 数据预处理
         self.data = data.copy()
@@ -26,8 +29,8 @@ class StockBacktest:
         self.cash = decimal.Decimal(initial_capital)
         self.balance = decimal.Decimal(initial_capital)
         self.result = {}
-        # {"":{'daily_profit_rate': 0, 'total_profit_rate': 0, 
-        #  'total_value': 0, 'cash': 0, 'market_cap': 0, 'index_daily_profit_rate': 0, 'index_total_profit_rate': 0}}
+        self.max_stock_num = 100
+        self.show_progress = show_progress  # 添加进度条显示控制参数
 
         # 设置回测时间范围
         self.start_time = pd.to_datetime(start_time) if start_time else self.data['trade_date'].min()
@@ -39,9 +42,9 @@ class StockBacktest:
                              (self.data['trade_date'] <= self.end_time)].reset_index(drop=True)
         
         # 设置股票列表和初始化持仓
-        self.stock_list = stock_list or []
+        self.stock_list = stock_list
         self.stocks_position = {stock: {'available': 0, 'unavailable': 0, 'cost_price': 0.0, 'sell_amount': 0} 
-                               for stock in self.stock_list}
+                                for stock in self.stock_list}
         
         # 获取指数数据
         self.index_code = index_code
@@ -242,7 +245,17 @@ class StockBacktest:
     
     def _apply_strategy(self, current_data):
         """应用交易策略"""
+
+        
+        
         for stock in self.stock_list:
+            if self.cash < 5000:
+                self.log_message("资金不足5000，暂停交易，等待资金恢复")
+                return
+            if len(self.stock_list) > self.max_stock_num:
+                self.log_message(f"股票数量超过{self.max_stock_num}，暂停交易，等待股票数量减少")
+                return
+            
             stock_data = current_data[current_data['stock_code'] == stock]
             if stock_data.empty:
                 continue
@@ -259,7 +272,13 @@ class StockBacktest:
         # 示例策略：持仓不足100股时买入
         if self.stocks_position[stock]['available'] < 100:
             self.buy(stock, self.open_price, 100)
-            
+        
+        elif self.stocks_position[stock]['cost_price']/self.open_price > 1.15:  # 盈利15%卖出
+            self.sell(stock, self.open_price, self.stocks_position[stock]['available'])
+        
+        elif self.stocks_position[stock]['cost_price']/self.open_price < 0.80:  # 亏损5%补仓
+            self.buy(stock, self.open_price, 100)
+        
         # 结束日期卖出所有持仓
         if self.current_date == self.end_time:
             available_shares = self.stocks_position[stock]['available']
@@ -268,8 +287,29 @@ class StockBacktest:
 
     def run_backtest(self):
         """运行回测过程"""
-        while self.current_date <= self.end_time:
-            self.next()
+        # 计算总天数
+        total_days = (self.end_time - self.current_date).days + 1
+        
+        if self.show_progress:
+            # 使用tqdm创建进度条，添加更多信息
+            with tqdm(total=total_days, desc="回测进度", unit="天") as pbar:
+                while self.current_date <= self.end_time:
+                    # 更新进度条描述，显示当前日期
+                    pbar.set_description(f"回测日期: {self.current_date.strftime('%Y-%m-%d')}")
+                    
+                    self.next()
+                    
+                    # 更新进度条
+                    pbar.update(1)
+                    
+                    # 添加进度条后缀，显示处理进度
+                    processed_days = pbar.n
+                    pbar.set_postfix(已处理=f"{processed_days}/{total_days}天", 
+                                    完成率=f"{processed_days/total_days:.1%}")
+        else:
+            # 不显示进度条
+            while self.current_date <= self.end_time:
+                self.next()
         
         self.close_log()
 
@@ -298,7 +338,23 @@ if __name__ == '__main__':
         port=3306
     )
     user_sql.connect()
-    stock_list = ['002594.XSHE','603881.XSHG']
+    # stock_list = ['002594.XSHE','603881.XSHG']
+    stock_list = user_sql.select(
+        'stock_info',
+        columns=['stock_code'],
+        where='market_cap > 10 AND market_cap < 100 AND is_st = 0'
+    )
+    print(f"获取到 {len(stock_list)} 只股票")
+    stock_list = [item['stock_code'] for item in stock_list]
+
+    # 随机打乱股票列表
+    import random
+    random.shuffle(stock_list)
+    stock_list = stock_list[:100]
+    # print(stock_list)
+    
+    # stock_list = ['002594.XSHE','603881.XSHG']
+    
     
     # 创建IN查询的占位符
     placeholders = ', '.join(['%s'] * len(stock_list))
@@ -313,9 +369,14 @@ if __name__ == '__main__':
     df = pd.DataFrame(stocks_data)
     df = df[['stock_code', 'trade_date', 'open', 'high', 'low', 'close', 'change_value','pct_change']]
     
-    # 使用方法1：运行回测并可视化
-    mybt = StockBacktest(df, initial_capital=100000, stock_list=stock_list)
+    # 使用方法1：运行回测并显示进度条（默认）
+    mybt = StockBacktest(df, initial_capital=100000, stock_list=stock_list, show_progress=True)
     mybt.run_backtest()
+    
+    # 使用方法2：运行回测但不显示进度条
+    # print("\n不使用进度条运行回测:")
+    # mybt_no_progress = StockBacktest(df, initial_capital=100000, stock_list=stock_list, show_progress=False)
+    # mybt_no_progress.run_backtest()
     
     # 使用可视化器显示结果
     # visualizer = BacktestVisualizer(log_file='backtest_log.txt', port=8080)
