@@ -43,8 +43,10 @@ class StockBacktest:
         
         # 设置股票列表和初始化持仓
         self.stock_list = stock_list
-        self.stocks_position = {stock: {'available': 0, 'unavailable': 0, 'cost_price': 0.0, 'sell_amount': 0} 
-                                for stock in self.stock_list}
+        self.stocks_position = {}
+        self.zy_list = []  # 用于记录已卖出的股票
+        # self.stocks_position = {stock: {'available': 0, 'unavailable': 0, 'cost_price': 0.0, 'sell_amount': 0} 
+        #                         for stock in self.stock_list}
         
         # 获取指数数据
         self.index_code = index_code
@@ -71,14 +73,18 @@ class StockBacktest:
         self.log.write(log_entry + "\n")
         # print(log_entry)
     
-    def buy(self, stock: str, price: float, amount: int):
+    def buy(self, stock: str, price: float, amount: int, additional: bool = False):
         """买入操作"""
+        if stock in self.zy_list:
+            return   # 如果股票已经卖出，则不再买入
         cost = price * amount
         if cost > self.cash:
             self.log_message(f"资金不足，无法买入 {stock} {amount} 股 @ {price:.2f}")
             return False
             
         self.cash -= decimal.Decimal(cost)
+        if stock not in self.stocks_position:
+            self.stocks_position[stock] = {'available': 0, 'unavailable': 0, 'cost_price': 0.0, 'sell_amount': 0}
         self.stocks_position[stock]['unavailable'] = amount
         
         # 计算成本价
@@ -90,15 +96,25 @@ class StockBacktest:
             new_cost = float(price) * amount
             total_position = current_position + amount
             self.stocks_position[stock]['cost_price'] = (current_cost + new_cost) / total_position
+        if not additional:
+            self.log_message(f"买入 {stock} {amount} 股 @ {price:.2f}，总费用 {cost:.2f}，剩余资金 {self.cash:.2f}")
+        else:
+            self.log_message(f"补仓 {stock} {amount} 股 @ {price:.2f}，总费用 {cost:.2f}，剩余资金 {self.cash:.2f}")
 
-        self.log_message(f"买入 {stock} {amount} 股 @ {price:.2f}，总费用 {cost:.2f}，剩余资金 {self.cash:.2f}")
         return True
 
     def sell(self, stock: str, price: float, amount: int):
         """卖出操作"""
-        if self.stocks_position[stock]['available'] < amount:
+        amount_ = 0
+
+        if amount == -1:  # 如果amount为-1，表示卖出所有可用股票
+
+            amount_ = -1
+            amount = self.stocks_position[stock]['available']
+
+        if self.stocks_position[stock]['available'] == 0 or amount > self.stocks_position[stock]['available']:
             self.log_message(f"持仓不足，无法卖出 {stock} {amount} 股 @ {price:.2f}")
-            return False
+            return 
             
         self.stocks_position[stock]['sell_amount'] += amount
         self.stocks_position[stock]['available'] -= amount
@@ -106,9 +122,15 @@ class StockBacktest:
         revenue = float(price * amount)
         profit = revenue - self.stocks_position[stock]['cost_price'] * amount
         self.cash += decimal.Decimal(revenue)
-        
-        self.log_message(f"卖出 {stock} {amount} 股 @ {price:.2f}，获利 {profit:.2f}，剩余资金 {self.cash:.2f}")
-        return True
+
+
+        if amount_ == -1:
+            self.log_message(f"清仓 {stock}")
+            del self.stocks_position[stock]
+            self.zy_list.append(stock)
+        else:
+            self.log_message(f"卖出 {stock} {amount} 股 @ {price:.2f}，获利 {profit:.2f}，剩余资金 {self.cash:.2f}")
+
 
     def _get_index_data(self):
         """获取指数数据"""
@@ -157,7 +179,7 @@ class StockBacktest:
         if current_data.empty:
             return 0
             
-        for stock in self.stock_list:
+        for stock in self.stocks_position.keys():
             stock_data = current_data[current_data['stock_code'] == stock]
             if stock_data.empty:
                 continue
@@ -227,6 +249,20 @@ class StockBacktest:
         current_data = self.data[self.data['trade_date'] == self.current_date]
         
         if not current_data.empty:
+            # 检查持仓
+            if len(self.stocks_position) > 0:
+                self.log_message(f'盘前整理')
+                stocks_position_keys = list(self.stocks_position.keys())
+                for stock in stocks_position_keys:
+                    stock_data = current_data[current_data['stock_code'] == stock]
+                    if stock_data.empty:
+                        continue
+                        
+                    self.open_price = float(stock_data['open'].values[0])
+                    self.close_price = float(stock_data['close'].values[0])
+                    self.check_position(stock)
+                self.log_message(f'盘前整理完成')
+
             # 执行交易策略
             self._apply_strategy(current_data)
             
@@ -238,21 +274,19 @@ class StockBacktest:
         self.current_date += timedelta(days=1)
         
         # 更新可用持仓
-        for stock in self.stock_list:
+        for stock in self.stocks_position.keys():
             if self.stocks_position[stock]['unavailable'] > 0:
                 self.stocks_position[stock]['available'] += self.stocks_position[stock]['unavailable']
                 self.stocks_position[stock]['unavailable'] = 0
     
     def _apply_strategy(self, current_data):
-        """应用交易策略"""
-
-        
-        
+        """应用交易策略"""  
+            
         for stock in self.stock_list:
             if self.cash < 5000:
                 self.log_message("资金不足5000，暂停交易，等待资金恢复")
                 return
-            if len(self.stock_list) > self.max_stock_num:
+            if len(self.stocks_position) > self.max_stock_num:
                 self.log_message(f"股票数量超过{self.max_stock_num}，暂停交易，等待股票数量减少")
                 return
             
@@ -260,23 +294,33 @@ class StockBacktest:
             if stock_data.empty:
                 continue
                 
-            self.open_price = stock_data['open'].values[0]
-            self.close_price = stock_data['close'].values[0]
+            self.open_price = float(stock_data['open'].values[0])
+            self.close_price = float(stock_data['close'].values[0])
 
             self.strategy(stock)          
     
+    def check_position(self, stock):
+        """检查持仓情况"""
+        if self.stocks_position[stock]['cost_price']/self.open_price < 0.85:  # 盈利15%卖出
+            self.sell(stock, self.open_price, -1)
+        
+        elif self.stocks_position[stock]['cost_price']/self.open_price > 1.2 :  # 亏损20%补仓
+            self.buy(stock, self.open_price, 100, additional=True)
+        
+
     def strategy(self,stock):
         """
         策略
         """
         # 示例策略：持仓不足100股时买入
-        if self.stocks_position[stock]['available'] < 100:
+        if stock not in self.stocks_position:
+            self.stocks_position[stock] = {'available': 0, 'unavailable': 0, 'cost_price': 0.0, 'sell_amount': 0}
             self.buy(stock, self.open_price, 100)
         
-        elif self.stocks_position[stock]['cost_price']/self.open_price > 1.15:  # 盈利15%卖出
-            self.sell(stock, self.open_price, self.stocks_position[stock]['available'])
+        elif self.stocks_position[stock]['cost_price']/self.open_price < 0.85:  # 盈利15%卖出
+            self.sell(stock, self.open_price, -1)
         
-        elif self.stocks_position[stock]['cost_price']/self.open_price < 0.80:  # 亏损5%补仓
+        elif self.stocks_position[stock]['cost_price']/self.open_price > 1.2:  # 亏损5%补仓
             self.buy(stock, self.open_price, 100)
         
         # 结束日期卖出所有持仓
@@ -349,9 +393,9 @@ if __name__ == '__main__':
 
     # 随机打乱股票列表
     import random
+    random.seed(666)  # 设置随机种子以确保可重复性
     random.shuffle(stock_list)
-    stock_list = stock_list[:100]
-    # print(stock_list)
+    # stock_list = stock_list[:100]
     
     # stock_list = ['002594.XSHE','603881.XSHG']
     
