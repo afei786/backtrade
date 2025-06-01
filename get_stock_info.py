@@ -3,6 +3,11 @@ import re
 import time
 import random
 from datetime import datetime
+import jqdatasdk
+from jqdatasdk import *
+import random
+import time
+from pysql import PySQL
 
 def get_stock_info(international_code: str, start_date, end_date, max_retries=3) -> dict:
     """
@@ -74,8 +79,7 @@ def get_stock_info(international_code: str, start_date, end_date, max_retries=3)
             total_market_cap = round(float(total_market_cap) / 100000000, 2)  # 转换为亿元
         except (ValueError, TypeError):
             total_market_cap = ''
-            
-
+    
     # 字典组装
     return {
         'stock_code': international_code,
@@ -107,12 +111,7 @@ def detect_board(stock_code: str) -> str:
     else:
         return '未知板块'
 
-if __name__ == '__main__':
-    import jqdatasdk
-    from jqdatasdk import *
-    import random
-    import time
-    from pysql import PySQL
+def main():
     user_sql = PySQL(
         host='localhost',
         user='afei',
@@ -123,7 +122,7 @@ if __name__ == '__main__':
     user_sql.connect()
 
     jqdatasdk.auth('13625559037', 'Jm123456')
-    all_stocks = get_all_securities(['stock'])
+    all_stocks = get_all_securities(['stock'])  # jqdata获取所有股票信息
     all_stocks['start_date'] = all_stocks['start_date'].dt.strftime('%Y-%m-%d')
     all_stocks['end_date'] = all_stocks['end_date'].dt.strftime('%Y-%m-%d')
 
@@ -197,7 +196,7 @@ if __name__ == '__main__':
     print(f"失败数量: {error_count}")
     print(f"总耗时: {time.time() - start_time:.2f} 秒")
 
-    # code = '000001.XSHE'
-    # info = get_stock_info(code, '2000-01-01', '2023-10-01')
-
-    # print(info)
+    
+if __name__ == '__main__':
+    main()
+    

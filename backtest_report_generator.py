@@ -16,6 +16,7 @@ import sys
 import warnings
 import uuid
 import json
+import ast
 
 warnings.filterwarnings('ignore')
 
@@ -144,36 +145,37 @@ def calculate_win_rate_and_profit_ratio(returns):
 def load_data(csv_file):
     """
     加载CSV数据并进行处理
-    
+
     参数:
         csv_file (str): CSV文件路径
-    
+
     返回:
         pandas.DataFrame: 处理后的数据
     """
     try:
         # 读取CSV文件
         df = pd.read_csv(csv_file)
-        
+
         # 将日期列转换为日期时间格式
         df['trade_date'] = pd.to_datetime(df['trade_date'])
-        
+
+        # 去除百分号并转为float
+        for col in ['total_profit_rate', 'index_total_profit_rate']:
+            if col in df.columns:
+                df[col] = df[col].str.replace('%', '', regex=False).astype(float)
+
         # 确保数据按日期排序
         df = df.sort_values('trade_date')
-        
+
         # 计算每日收益率 - 使用当日与前一日的比值计算收益率
-        # 将百分比格式转换为小数进行计算
         if 'total_profit_rate' in df.columns:
-            # 使用前值和后值分别计算，避免精度问题
             prev_values = df['total_profit_rate'].shift(1)
-            # 第一天的收益率设为0
             df.loc[df.index[0], 'daily_strategy_return'] = 0
-            # 其他天的收益率 = (今天值 - 昨天值) / (100 + 昨天值) 
             mask = df.index > df.index[0]
             df.loc[mask, 'daily_strategy_return'] = (df.loc[mask, 'total_profit_rate'] - prev_values[mask]) / (100 + prev_values[mask])
         else:
             df['daily_strategy_return'] = 0
-        
+
         # 计算每日指数收益率
         if 'index_total_profit_rate' in df.columns:
             prev_values = df['index_total_profit_rate'].shift(1)
@@ -182,14 +184,14 @@ def load_data(csv_file):
             df.loc[mask, 'daily_index_return'] = (df.loc[mask, 'index_total_profit_rate'] - prev_values[mask]) / (100 + prev_values[mask])
         else:
             df['daily_index_return'] = 0
-        
+
         # 假设初始投资为10000元，计算每个时间点的总价值
         initial_investment = 10000
         df['strategy_value'] = initial_investment * (1 + df['total_profit_rate'] / 100)
         df['index_value'] = initial_investment * (1 + df['index_total_profit_rate'] / 100)
-        
+
         return df
-    
+
     except Exception as e:
         print(f"加载数据失败: {e}")
         sys.exit(1)
@@ -245,10 +247,10 @@ def calculate_metrics(df):
 def create_daily_returns_chart(df):
     """
     创建每日收益率图表
-    
+
     参数:
         df (pandas.DataFrame): 处理后的数据
-    
+
     返回:
         tuple: (data, layout) 图表数据和布局配置的JSON字符串
     """
@@ -257,23 +259,23 @@ def create_daily_returns_chart(df):
     
     # 创建图表数据
     data = [
-        # 策略每日收益率曲线
+        # 策略每日收益率曲线（红色）
         {
             "type": "scatter",
             "x": sampled_df['trade_date'].dt.strftime('%Y-%m-%d').tolist(),
             "y": (sampled_df['daily_strategy_return'] * 100).tolist(),  # 转换为百分比
             "name": "策略日收益率",
-            "line": {"color": 'rgb(0, 100, 80)', "width": 2},
-            "hovertemplate": '%{x}<br>%{y:.2f}%<extra></extra>'  # 简化悬停信息
+            "line": {"color": 'rgb(204,0,0)', "width": 2},  # 红色
+            "hovertemplate": '%{x}<br>%{y:.2f}%<extra></extra>'
         },
-        # 指数每日收益率曲线
+        # 指数每日收益率曲线（蓝色）
         {
             "type": "scatter",
             "x": sampled_df['trade_date'].dt.strftime('%Y-%m-%d').tolist(),
             "y": (sampled_df['daily_index_return'] * 100).tolist(),  # 转换为百分比
             "name": "指数日收益率",
-            "line": {"color": 'rgb(205, 12, 24)', "width": 2},
-            "hovertemplate": '%{x}<br>%{y:.2f}%<extra></extra>'  # 简化悬停信息
+            "line": {"color": 'rgb(0,102,204)', "width": 2},  # 蓝色
+            "hovertemplate": '%{x}<br>%{y:.2f}%<extra></extra>'
         }
     ]
     
@@ -319,49 +321,49 @@ def create_daily_returns_chart(df):
 def create_total_returns_chart(df):
     """
     创建策略总收益率和指数总收益率图表
-    
+
     参数:
         df (pandas.DataFrame): 处理后的数据
-    
+
     返回:
         tuple: (data, layout) 图表数据和布局配置的JSON字符串
     """
     # 对数据进行降采样处理
     sampled_df = resample_time_series(df)
-    
+
     # 创建图表数据
     data = [
-        # 策略总收益率曲线
+        # 策略总收益率曲线（红色）
         {
             "type": "scatter",
             "x": sampled_df['trade_date'].dt.strftime('%Y-%m-%d').tolist(),
             "y": sampled_df['total_profit_rate'].tolist(),  # 已经是百分比格式
             "name": "策略总收益率",
-            "line": {"color": 'rgb(0, 100, 80)', "width": 2},
-            "hovertemplate": '%{x}<br>%{y:.2f}%<extra></extra>'  # 简化悬停信息
+            "line": {"color": 'rgb(204,0,0)', "width": 2},  # 红色
+            "hovertemplate": '%{x}<br>%{y:.2f}%<extra></extra>'
         },
-        # 指数总收益率曲线
+        # 指数总收益率曲线（蓝色）
         {
             "type": "scatter",
             "x": sampled_df['trade_date'].dt.strftime('%Y-%m-%d').tolist(),
-            "y": sampled_df['index_total_profit_rate'].tolist(),  # 已经是百分比格式
+            "y": sampled_df['index_total_profit_rate'].tolist(),
             "name": "指数总收益率",
-            "line": {"color": 'rgb(205, 12, 24)', "width": 2},
-            "hovertemplate": '%{x}<br>%{y:.2f}%<extra></extra>'  # 简化悬停信息
+            "line": {"color": 'rgb(0,102,204)', "width": 2},  # 蓝色
+            "hovertemplate": '%{x}<br>%{y:.2f}%<extra></extra>'
         }
     ]
-    
+
     # 创建布局配置
     layout = {
         "title": "累计收益率",
         "height": 400,
-        "width": "100%",  # 使用100%宽度
-        "autosize": True,  # 启用自动大小调整
-        "margin": {  # 设置边距
-            "l": 50,   # 左边距
-            "r": 30,   # 右边距
-            "t": 50,   # 上边距
-            "b": 50    # 下边距
+        "width": "100%",
+        "autosize": True,
+        "margin": {
+            "l": 50,
+            "r": 30,
+            "t": 50,
+            "b": 50
         },
         "legend": {
             "orientation": "h",
@@ -372,11 +374,10 @@ def create_total_returns_chart(df):
         },
         "hovermode": "x unified",
         "yaxis": {"title": "累计收益率(%)"},
-        "dragmode": False,  # 禁用拖拽模式
+        "dragmode": False,
         "modebar": {
-            "remove": ["lasso2d", "select2d", "autoScale2d", "toggleSpikelines"]  # 移除不必要的工具按钮
+            "remove": ["lasso2d", "select2d", "autoScale2d", "toggleSpikelines"]
         },
-        # 添加零线
         "shapes": [
             {
                 "type": "line",
@@ -387,66 +388,79 @@ def create_total_returns_chart(df):
             }
         ]
     }
-    
+
     return data, layout
 
 def create_trade_records_table(df):
     """
     创建交易记录表格
-    
+
     参数:
         df (pandas.DataFrame): 处理后的数据
-    
+
     返回:
         str: 交易记录表格HTML代码
     """
-    # 这里我们模拟一些交易记录，因为CSV中没有提供交易明细
-    # 实际应用中，应该从交易记录数据中获取
-    
-    # 假设第一天买入，最后一天卖出
-    first_day = df.iloc[0]
-    last_day = df.iloc[-1]
-    
-    # 假设交易记录
     table_html = """
-                <h2>交易记录</h2>
-                <table>
+        <h2>交易记录</h2>
+        <table>
+            <tr>
+                <th>日期</th>
+                <th>操作</th>
+                <th>股票</th>
+                <th>数量</th>
+                <th>价格</th>
+                <th>金额</th>
+                <th>盈亏</th>
+            </tr>
+    """
+
+    for _, row in df.iterrows():
+        trade_date = row['trade_date'].strftime('%Y-%m-%d')
+        trade_log = row.get('trade_log', '')
+        if not trade_log or trade_log == '{}' or trade_log == 'nan':
+            continue
+        try:
+            # 兼容单引号和空字典
+            log_dict = ast.literal_eval(trade_log)
+        except Exception:
+            continue
+        for stock, info in log_dict.items():
+            op = info.get('Operation', '')
+            amount = info.get('amount', '')
+            # 买入/补仓
+            if op in ['买入', '补仓']:
+                price = info.get('buy_price', '')
+                value = info.get('value', '')
+                profit = info.get('profit', '')
+                table_html += f"""
                     <tr>
-                        <th>日期</th>
-                        <th>操作</th>
-                        <th>股票</th>
-                        <th>数量</th>
-                        <th>价格</th>
-                        <th>金额</th>
+                        <td>{trade_date}</td>
+                        <td class="{'buy' if op=='买入' else 'buy'}">{op}</td>
+                        <td>{stock}</td>
+                        <td>{amount}</td>
+                        <td>{price}</td>
+                        <td>{value}元</td>
+                        <td>{profit if profit != '' else '-'}</td>
                     </tr>
                 """
-    
-    # 添加卖出记录（最后一天）
-    table_html += f"""
+            # 卖出/清仓
+            elif op in ['卖出', '清仓']:
+                price = info.get('sell_price', '')
+                value = info.get('revenue', '')
+                profit = info.get('profit', '')
+                table_html += f"""
                     <tr>
-                        <td>{last_day['trade_date'].strftime('%Y-%m-%d')}</td>
-                        <td class="sell">卖出</td>
-                        <td>002594.XSHE</td>
-                        <td>100</td>
-                        <td>{382.81:.2f}</td>
-                        <td>{38281.00:.2f}元</td>
+                        <td>{trade_date}</td>
+                        <td class="{'sell' if op in ['卖出', '清仓'] else ''}">{op}</td>
+                        <td>{stock}</td>
+                        <td>{amount}</td>
+                        <td>{price}</td>
+                        <td>{value}元</td>
+                        <td>{profit if profit != '' else '-'}</td>
                     </tr>
-                    """
-    
-    # 添加买入记录（第一天）
-    table_html += f"""
-                    <tr>
-                        <td>{first_day['trade_date'].strftime('%Y-%m-%d')}</td>
-                        <td class="buy">买入</td>
-                        <td>002594.XSHE</td>
-                        <td>100</td>
-                        <td>{338.04:.2f}</td>
-                        <td>{33804.00:.2f}元</td>
-                    </tr>
-                    """
-    
+                """
     table_html += "</table>"
-    
     return table_html
 
 def generate_html_report(df, metrics, output_file="backtest_report.html"):
@@ -741,4 +755,4 @@ def main():
     print("回测报告生成完成!")
 
 if __name__ == "__main__":
-    main() 
+    main()

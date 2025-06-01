@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 import decimal
 from pysql import PySQL
 from tqdm import tqdm  # 导入tqdm库
+from filter_stocks import filter_stocks_by_price_range
 
 
 class StockBacktest:
@@ -23,12 +24,20 @@ class StockBacktest:
         # 数据预处理
         self.data = data.copy()
         self.data['trade_date'] = pd.to_datetime(self.data['trade_date'])
-        
+        self.sql = PySQL(
+                host='localhost',
+                user='afei',
+                password='sf123456',
+                database='stock',
+                port=3306
+            )
+        self.sql.connect()
+
         # 初始化资金和统计信息
         self.initial_capital = initial_capital
         self.cash = decimal.Decimal(initial_capital)
         self.balance = decimal.Decimal(initial_capital)
-        self.result = {}
+        self.result = {}  # 每日回测结果
         self.max_stock_num = 100
         self.show_progress = show_progress  # 添加进度条显示控制参数
 
@@ -42,9 +51,9 @@ class StockBacktest:
                              (self.data['trade_date'] <= self.end_time)].reset_index(drop=True)
         
         # 设置股票列表和初始化持仓
-        self.stock_list = stock_list
-        self.stocks_position = {}
-        self.zy_list = []  # 用于记录已卖出的股票
+        self.stock_pool = stock_list  # 股票池
+        self.stocks_position = {}  # 持仓
+        self.zy_list = []  # 用于记录已止盈卖出的股票
         # self.stocks_position = {stock: {'available': 0, 'unavailable': 0, 'cost_price': 0.0, 'sell_amount': 0} 
         #                         for stock in self.stock_list}
         
@@ -52,7 +61,7 @@ class StockBacktest:
         self.index_code = index_code
         self.index_data = self._get_index_data()
         if not self.index_data.empty:
-            self.initial_index_price = float(self.index_data.iloc[0]['open'])
+            self.initial_index_price = float(self.index_data.iloc[0]['open'])  # 初始指数价格
         
         # 初始化日志
         self.log_file_name = log_file
@@ -75,8 +84,8 @@ class StockBacktest:
     
     def buy(self, stock: str, price: float, amount: int, additional: bool = False):
         """买入操作"""
-        if stock in self.zy_list:
-            return   # 如果股票已经卖出，则不再买入
+        if stock in self.zy_list:  # 如果股票在止盈列表中，则不再买入
+            return   
         cost = price * amount
         if cost > self.cash:
             self.log_message(f"资金不足，无法买入 {stock} {amount} 股 @ {price:.2f}")
@@ -98,58 +107,65 @@ class StockBacktest:
             self.stocks_position[stock]['cost_price'] = (current_cost + new_cost) / total_position
         if not additional:
             self.log_message(f"买入 {stock} {amount} 股 @ {price:.2f}，总费用 {cost:.2f}，剩余资金 {self.cash:.2f}")
+            self.trade_log[stock] = {
+                "Operation": "买入",
+                "name": stock,
+                "amount": amount,
+                "buy_price": price,
+                "value": f"{amount * price:.2f}",
+                "profit": f"{(self.close_price-price) * amount:.2f}" # 计算买入后收盘价的盈利
+            }
+
         else:
             self.log_message(f"补仓 {stock} {amount} 股 @ {price:.2f}，总费用 {cost:.2f}，剩余资金 {self.cash:.2f}")
+            self.trade_log[stock] = {
+                "Operation": "补仓",
+                "amount": amount,
+                "buy_price": price,
+                "value": f"{amount * price:.2f}",
+                "profit": f"{(self.close_price-self.stocks_position[stock]['cost_price']) * amount:.2f}"  # 计算补仓后收盘价的盈利
+            }
 
         return True
 
     def sell(self, stock: str, price: float, amount: int):
         """卖出操作"""
-        amount_ = 0
-
-        if amount == -1:  # 如果amount为-1，表示卖出所有可用股票
-
-            amount_ = -1
-            amount = self.stocks_position[stock]['available']
-
         if self.stocks_position[stock]['available'] == 0 or amount > self.stocks_position[stock]['available']:
             self.log_message(f"持仓不足，无法卖出 {stock} {amount} 股 @ {price:.2f}")
             return 
-            
-        self.stocks_position[stock]['sell_amount'] += amount
-        self.stocks_position[stock]['available'] -= amount
 
-        revenue = float(price * amount)
-        profit = revenue - self.stocks_position[stock]['cost_price'] * amount
-        self.cash += decimal.Decimal(revenue)
-
-
-        if amount_ == -1:
-            self.log_message(f"清仓 {stock}")
+        if amount == -1:
+            revenue = float(price * self.stocks_position[stock]['available'])  # 卖出金额
+            profit = revenue - self.stocks_position[stock]['cost_price'] * self.stocks_position[stock]['available']  # 盈利
+            self.cash += decimal.Decimal(revenue)  # 更新现金
+            self.log_message(f"清仓 {stock} @ {self.stocks_position[stock]['cost_price']:.2f} @ {self.stocks_position[stock]['available']}，获利 {profit:.2f}，剩余资金 {self.cash:.2f}")
+            self.trade_log[stock] = {
+                "Operation": "清仓",
+                "amount": self.stocks_position[stock]['available'],
+                "sell_price": price,
+                "revenue": f"{revenue:.2f}",
+                "profit": f"{profit:.2f}",
+            }
+            # 直接删除持仓信息
             del self.stocks_position[stock]
             self.zy_list.append(stock)
         else:
+            revenue = float(price * amount)  # 卖出金额
+            profit = revenue - self.stocks_position[stock]['cost_price'] * amount  # 卖出盈利
+            self.cash += decimal.Decimal(revenue)  # 更新现金
+            self.stocks_position[stock]['available'] -= amount
             self.log_message(f"卖出 {stock} {amount} 股 @ {price:.2f}，获利 {profit:.2f}，剩余资金 {self.cash:.2f}")
 
 
     def _get_index_data(self):
         """获取指数数据"""
-        try:
-            user_sql = PySQL(
-                host='localhost',
-                user='afei',
-                password='sf123456',
-                database='stock',
-                port=3306
-            )
-            user_sql.connect()
-            
+        try:           
             # 构建查询条件
             where_clause = f'index_code = %s AND trade_date >= %s AND trade_date <= %s'
             params = [self.index_code, self.start_time.strftime('%Y-%m-%d'), self.end_time.strftime('%Y-%m-%d')]
             
             # 查询指数数据，确保包含所有需要的列
-            index_data = user_sql.select('index_daily_k',
+            index_data = self.sql.select('index_daily_k',
                                        columns=['trade_date', 'open', 'close', 'high', 'low', 'change_value', 'pct_change'],
                                        where=where_clause,
                                        params=params)
@@ -170,90 +186,22 @@ class StockBacktest:
         except Exception as e:
             print(f"获取指数数据失败: {e}")
             return pd.DataFrame()
-
-    def calculate_returns(self, current_data):
-        """计算当日收益和持仓情况"""
-        market_cap = 0
-        total_profit = 0
-        
-        if current_data.empty:
-            return 0
-            
-        for stock in self.stocks_position.keys():
-            stock_data = current_data[current_data['stock_code'] == stock]
-            if stock_data.empty:
-                continue
-                
-            position = self.stocks_position[stock]['available'] + self.stocks_position[stock]['unavailable']
-            if position == 0:
-                continue
-                
-            close = stock_data['close'].values[0]
-            change_value = stock_data['change_value'].values[0]
-            open_price = stock_data['open'].values[0]
-            pct_change = stock_data['pct_change'].values[0]
-            market_cap += float(close * position)
-            cost_price = self.stocks_position[stock]['cost_price']
-            pct_profit = (float(close)/self.stocks_position[stock]['cost_price'] - 1) * 100
-            
-            # 计算当日盈亏
-            if self.stocks_position[stock]['unavailable'] == 0:  # 无交易
-                stock_profit = float(change_value) * self.stocks_position[stock]['available']
-            else:  # 有交易
-                if self.current_date == self.start_time:
-                    stock_profit = float(close - open_price) * self.stocks_position[stock]['unavailable']
-                else:
-                    position_profit = float(change_value) * self.stocks_position[stock]['available']
-                    sell_profit = float(change_value) * self.stocks_position[stock]['sell_amount']
-                    buy_profit = float(close - open_price) * self.stocks_position[stock]['unavailable']
-                    stock_profit = position_profit + sell_profit + buy_profit
-            
-            total_profit += stock_profit
-            
-            # 记录单个股票的持仓信息
-            self.log_message(f"持仓 {stock}: {position} 股，当日盈亏 {stock_profit:.2f}, 成本价 {cost_price}, 当日收盘价格 {close}, 当日涨跌幅 {pct_change:.2f}%, 持仓收益率 {pct_profit:.2f}%")
-        
-        # 计算总资产和收益率
-        total_value = float(self.cash + decimal.Decimal(market_cap))
-        returns = (total_value - self.initial_capital) / self.initial_capital * 100
-        
-        # 计算同期指数收益率
-        try:
-            if not self.index_data.empty and self.current_date in self.index_data.index:
-                cost_index = self.index_data.loc[self.start_time, 'open']
-                open_index = self.index_data.loc[self.current_date, 'open']
-                close_index = self.index_data.loc[self.current_date, 'close']
-                pct_change_index = self.index_data.loc[self.current_date, 'pct_change']
-                
-                # 当日指数收益率
-                index_return = (close_index/open_index - 1) * 100
-                
-                # 持仓期指数收益率（从开始日到当前日）
-                index_profit_rate = (close_index/cost_index - 1) * 100
-                
-                self.log_message(f"指数{self.index_code}当天收益率: {index_return:.2f}%, 当日涨跌幅{pct_change_index:.2f}%, 指数总收益率: {index_profit_rate:.2f}%")
-                
-                self.result[self.current_date] = {'total_profit_rate': returns, 'total_value': total_value, 'cash': self.cash, 'market_cap': market_cap, 
-                                                 'index_total_profit_rate': index_profit_rate}
-        except Exception as e:
-            self.log_message(f"计算指数收益率时出错: {e}")
-        
-        # 记录总体信息
-        self.log_message(f"当日总结: 总市值 {market_cap:.2f}，现金 {self.cash:.2f}，总资产 {total_value:.2f}，总盈亏 {total_profit:.2f}，总收益率 {returns:.2f}%")
-        
-        return returns
       
+
     def next(self):
         """执行下一个交易日的回测"""
         # 获取当前日期的数据
+        self.trade_log = {}
         current_data = self.data[self.data['trade_date'] == self.current_date]
         
         if not current_data.empty:
             # 检查持仓
             if len(self.stocks_position) > 0:
                 self.log_message(f'盘前整理')
+                # 使用列表副本遍历，避免在遍历过程中修改字典结构
                 stocks_position_keys = list(self.stocks_position.keys())
                 for stock in stocks_position_keys:
+                    
                     stock_data = current_data[current_data['stock_code'] == stock]
                     if stock_data.empty:
                         continue
@@ -266,23 +214,71 @@ class StockBacktest:
             # 执行交易策略
             self._apply_strategy(current_data)
             
-            # 计算当日收益
-            self.calculate_returns(current_data)
-            self.log.write("\n")
-        
+            # 更新可用持仓
+            self.log_message("当日可用持仓:")
+            market_cap = 0  # 持仓市值
+            total_profit = 0  # 总盈利
+            stock_num = 0  # 持仓股票数量
+
+            for stock in list(self.stocks_position.keys()):  # 使用列表副本遍历，避免在遍历过程中修改字典结构
+                stock_data = current_data[current_data['stock_code'] == stock]
+                if stock_data.empty:
+                    continue
+                    
+                self.close_price = float(stock_data['close'].values[0])
+
+                if self.stocks_position[stock]['unavailable'] > 0:  # 更新持仓 t+1
+                    self.stocks_position[stock]['available'] += self.stocks_position[stock]['unavailable']
+                    self.stocks_position[stock]['unavailable'] = 0
+
+                elif self.stocks_position[stock]['available'] == 0 and self.stocks_position[stock]['unavailable'] == 0:  # 删除已清仓股票
+                    del self.stocks_position[stock]
+                    continue
+                stock_num += 1
+                self.stocks_position[stock]['close_price'] = self.close_price
+                available_amount = self.stocks_position[stock]['available']
+                profit_rate = (self.close_price / self.stocks_position[stock]['cost_price'] - 1) * 100
+                cost_price = self.stocks_position[stock]['cost_price']
+                close_price = self.stocks_position[stock]['close_price']
+                profit = (self.close_price - self.stocks_position[stock]['cost_price']) * available_amount  # 计算盈利
+
+
+
+                market_cap += float(self.close_price * self.stocks_position[stock]['available'])
+
+                self.log_message(f"{stock} 持仓: {available_amount}, 成本价：{cost_price:.2f}, 收盘价：{close_price:.2f}, 当日盈亏：{profit:.2f}, 收益率: {profit_rate:.2f}%")
+            
+            total_profit = market_cap + float(self.cash) - float(self.initial_capital)
+            total_profit_rate = total_profit/self.initial_capital*100  # 总收益率
+            total_assets = market_cap + float(self.cash)  # 总资产
+            self.log_message(f"当日持仓总市值: {market_cap:.2f}，现金: {self.cash:.2f}，总资产: {total_assets:.2f}，总盈利: {total_profit:.2f}, 总收益率: {total_profit_rate:.2f}% ")
+            self.log_message(f"当日持仓股票数量: {stock_num}")
+            self.log_message(f"止盈股票数量: {len(self.zy_list)}")
+
+            # 记录指数收益率
+            index_total_profit_rate = (self.index_data.loc[self.current_date, 'close'] / self.initial_index_price - 1) * 100 if not self.index_data.empty else 0
+            if self.current_date == self.start_time:  
+                self.log_message(f"当日指数收益率: {(self.index_data.loc[self.current_date, 'close']/self.initial_index_price-1)*100:.2f}%, 累计收益率{index_total_profit_rate:.2f}%\n")
+            else:
+                self.log_message(f"当日指数收益率: {self.index_data.loc[self.current_date, 'pct_change']:.2f}%, 累计收益率{index_total_profit_rate:.2f}%\n")
+            # 记录每日回测结果
+            self.result[self.current_date.strftime('%Y-%m-%d')] = {
+                'total_profit_rate': f"{total_profit_rate:.2f}%",
+                'total_assets': f"{total_assets:.2f}",
+                'cash': f"{float(self.cash):.2f}",
+                'market_cap': market_cap,
+                'index_total_profit_rate': f"{index_total_profit_rate:.2f}%",
+                "trade_log":self.trade_log,
+            }
+            # 计算指数基准
+
         # 移动到下一天
         self.current_date += timedelta(days=1)
-        
-        # 更新可用持仓
-        for stock in self.stocks_position.keys():
-            if self.stocks_position[stock]['unavailable'] > 0:
-                self.stocks_position[stock]['available'] += self.stocks_position[stock]['unavailable']
-                self.stocks_position[stock]['unavailable'] = 0
-    
+
     def _apply_strategy(self, current_data):
         """应用交易策略"""  
             
-        for stock in self.stock_list:
+        for stock in self.stock_pool:
             if self.cash < 5000:
                 self.log_message("资金不足5000，暂停交易，等待资金恢复")
                 return
@@ -301,34 +297,20 @@ class StockBacktest:
     
     def check_position(self, stock):
         """检查持仓情况"""
-        if self.stocks_position[stock]['cost_price']/self.open_price < 0.85:  # 盈利15%卖出
+        if self.open_price/self.stocks_position[stock]['cost_price'] > 1.15:  # 盈利15%卖出
             self.sell(stock, self.open_price, -1)
         
-        elif self.stocks_position[stock]['cost_price']/self.open_price > 1.2 :  # 亏损20%补仓
+        elif self.open_price/self.stocks_position[stock]['cost_price'] < 0.85 :  # 亏损20%补仓
             self.buy(stock, self.open_price, 100, additional=True)
         
-
     def strategy(self,stock):
         """
-        策略
+        盘中买入策略
         """
-        # 示例策略：持仓不足100股时买入
-        if stock not in self.stocks_position:
-            self.stocks_position[stock] = {'available': 0, 'unavailable': 0, 'cost_price': 0.0, 'sell_amount': 0}
-            self.buy(stock, self.open_price, 100)
+        if stock not in self.stocks_position and stock not in self.zy_list:
+            self.stocks_position[stock] = {'available': 0, 'unavailable': 0, 'cost_price': 0.0, 'close_price': 0.0}  #, 'sell_amount': 0}
+            self.buy(stock, self.open_price, 100)  # 建仓
         
-        elif self.stocks_position[stock]['cost_price']/self.open_price < 0.85:  # 盈利15%卖出
-            self.sell(stock, self.open_price, -1)
-        
-        elif self.stocks_position[stock]['cost_price']/self.open_price > 1.2:  # 亏损5%补仓
-            self.buy(stock, self.open_price, 100)
-        
-        # 结束日期卖出所有持仓
-        if self.current_date == self.end_time:
-            available_shares = self.stocks_position[stock]['available']
-            if available_shares > 0:
-                self.sell(stock, self.close_price, available_shares)
-
     def run_backtest(self):
         """运行回测过程"""
         # 计算总天数
@@ -365,7 +347,7 @@ class StockBacktest:
 
         # 将字典转为DataFrame，并将外层键作为一列
         df = pd.DataFrame.from_dict(self.result, orient='index').reset_index()
-        df.columns = ['trade_date', 'total_profit_rate', 'total_value', 'cash', 'market_cap', 'index_total_profit_rate']
+        df.columns = ['trade_date', 'total_profit_rate', 'total_value', 'cash', 'market_cap', 'index_total_profit_rate', 'trade_log']
 
         df.to_csv("output.csv", index=False, encoding='utf-8')
 
@@ -382,27 +364,23 @@ if __name__ == '__main__':
         port=3306
     )
     user_sql.connect()
-    # stock_list = ['002594.XSHE','603881.XSHG']
-    stock_list = user_sql.select(
-        'stock_info',
-        columns=['stock_code'],
-        where='market_cap > 10 AND market_cap < 100 AND is_st = 0'
-    )
-    print(f"获取到 {len(stock_list)} 只股票")
-    stock_list = [item['stock_code'] for item in stock_list]
+    start_date = '2025-01-01'
+    end_date = '2025-06-01'
+    result = filter_stocks_by_price_range(start_date, min_price=5, max_price=10)
+    stock_list = [item['stock_code'] for item in result]
 
     # 随机打乱股票列表
     import random
-    random.seed(666)  # 设置随机种子以确保可重复性
+    random.seed(415643)  # 设置随机种子以确保可重复性
     random.shuffle(stock_list)
-    # stock_list = stock_list[:100]
+    # stock_list = stock_list[:1000]
     
-    # stock_list = ['002594.XSHE','603881.XSHG']
+    # stock_list = ['002594.XSHE']
     
     
     # 创建IN查询的占位符
     placeholders = ', '.join(['%s'] * len(stock_list))
-    where_clause = f'trade_date > "2024-10-01" AND trade_date < "2025-05-20" AND stock_code IN ({placeholders})'
+    where_clause = f'trade_date > "{start_date}" AND trade_date < "{end_date}" AND stock_code IN ({placeholders})'
     
     stocks_data = user_sql.select('stock_daily_k',
                     columns=['stock_code','trade_date','open','high','low','close','change_value','pct_change'],
@@ -416,16 +394,7 @@ if __name__ == '__main__':
     # 使用方法1：运行回测并显示进度条（默认）
     mybt = StockBacktest(df, initial_capital=100000, stock_list=stock_list, show_progress=True)
     mybt.run_backtest()
+
+    from backtest_report_generator import main
+    main()
     
-    # 使用方法2：运行回测但不显示进度条
-    # print("\n不使用进度条运行回测:")
-    # mybt_no_progress = StockBacktest(df, initial_capital=100000, stock_list=stock_list, show_progress=False)
-    # mybt_no_progress.run_backtest()
-    
-    # 使用可视化器显示结果
-    # visualizer = BacktestVisualizer(log_file='backtest_log.txt', port=8080)
-    # visualizer.visualize()
-    
-    # 使用方法2：仅可视化已有的日志文件
-    # visualizer = BacktestVisualizer(log_file='backtest_log.txt', port=8080)
-    # visualizer.visualize()

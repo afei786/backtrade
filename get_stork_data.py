@@ -192,7 +192,7 @@ def get_existing_data(user_sql):
         print("继续执行，但可能会有重复数据")
     return existing_data
 
-def process_stock_data(records):
+def process_stock_data(records, stock_code):
     """处理股票数据，确保数据格式正确"""
     processed_records = []
     for row in records:
@@ -208,7 +208,7 @@ def process_stock_data(records):
         turnover_rate = process_decimal_field(row.turnover_rate)
         
         processed_records.append({
-            "stock_code": row.Index,
+            "stock_code": stock_code,
             "trade_date": row.date,
             "open": row.open,
             "high": row.high,
@@ -334,7 +334,7 @@ def batch_insert_index_records(user_sql, records):
         print(f"批量插入失败: {e}")
         raise
 
-def crawl_stock_data(stock_codes=None, clear_table=False):
+def crawl_stock_data(stock_codes=None, clear_table=False, start_date='2015-05-01', end_date='2025-05-19'):
     """抓取股票数据的主函数"""
     # 初始化数据库连接
     user_sql = init_database()
@@ -388,7 +388,7 @@ def crawl_stock_data(stock_codes=None, clear_table=False):
             save_checkpoint(stock_code)
             
             # 抓取数据
-            df = get_stock_k_data(stock_code, start_date='2015-05-19', end_date='2025-05-19', klt=101)
+            df = get_stock_k_data(stock_code, start_date=start_date, end_date=end_date, klt=101)
             
             if df.empty:
                 print(f"股票 {stock_code} 没有K线数据，跳过")
@@ -397,7 +397,7 @@ def crawl_stock_data(stock_codes=None, clear_table=False):
                 continue
             
             # 处理数据
-            records = process_stock_data(df.itertuples())
+            records = process_stock_data(df.itertuples(), stock_code)
             
             # 批量插入
             if records:
@@ -484,15 +484,15 @@ if __name__ == '__main__':
         clear_table = True
     
     # 获取沪深300指数数据
-    # index_code = ['000001.SH','399006.SZ', '000016.SH', '000688.SH','000300.SH', '000905.SH']
-    # for index in index_code:
-    #     get_index_data(index, start_date='2015-01-01', end_date='2025-05-19')
+    index_code = ['000001.SH','399006.SZ', '000016.SH', '000688.SH','000300.SH', '000905.SH']
+    for index in index_code:
+        get_index_data(index, start_date='2015-01-01', end_date='2025-05-30')
     
     # 获取股票数据（如果需要的话）
     # crawl_stock_data(clear_table=clear_table, stock_codes=['000001.XSHE'])
 
 
     # 获取全部股票数据
-    crawl_stock_data()
+    # crawl_stock_data(start_date='2015-01-01', end_date='2025-05-30', clear_table=True)
 
 
