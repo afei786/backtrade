@@ -394,7 +394,7 @@ def backtrade(user_sql, region, zy_rate=1.2, zs_rate=0.8, ma_line='ma30'):
 
     start_date = '2025-01-01'
     end_date = '2025-06-01'
-    result = filter_stocks_by_price_range(start_date, min_price=10, max_price=15, min_market_cap=30, max_market_cap=180, region=region)
+    result = filter_stocks_by_price_range(start_date, min_price=5, max_price=15, min_market_cap=30, max_market_cap=180, region=region)
     if not result:
         print(f"没有找到符合条件的股票，区域: {region}, 起始日期: {start_date}, 结束日期: {end_date}")
         return 0, 0
@@ -438,46 +438,46 @@ if __name__ == '__main__':
         'port': 3306
     }
     user_sql = PySQL(**user_sql_config)
-    user_sql.connect()
-    region = user_sql.select('stock_info', columns=['region'])  # 获取所有非ST股票
-    region = [item['region'] for item in region]
-    region = list(set(region))  # 去重
-    user_sql.close()
+    # user_sql.connect()
+    # region = user_sql.select('stock_info', columns=['region'])  # 获取所有非ST股票
+    # region = [item['region'] for item in region]
+    # region = list(set(region))  # 去重
+    # user_sql.close()
 
-    zy_rate = [1.1, 1.15, 1.2, 1.25, 1.3, 1.35, 1.4]  # 止盈率列表
-    zs_rate = [0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6]  # 止损率列表
+    # zy_rate = [1.1, 1.15, 1.2, 1.25, 1.3, 1.35, 1.4]  # 止盈率列表
+    # zs_rate = [0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6]  # 止损率列表
     ma_line = ['ma5', 'ma10', 'ma20', 'ma30', 'ma45', 'ma60']  # 均线列表
 
-    result_file = 'backtest_results2.txt'
-    # finished_tasks = parse_finished_tasks(result_file)
+    # result_file = 'backtest_results2.txt'
+    # # finished_tasks = parse_finished_tasks(result_file)
 
-    # 创建日志文件
-    with open(result_file, 'w', encoding='utf-8') as f:
-        f.write("回测开始\n")
-        f.write("===========================================\n")
-        f.close()
+    # # 创建日志文件
+    # with open(result_file, 'w', encoding='utf-8') as f:
+    #     f.write("回测开始\n")
+    #     f.write("===========================================\n")
+    #     f.close()
 
-    # 组合所有参数
-    tasks = []
-    ma = 'ma30'  # 默认均线
-    for r in region:
-        profit,profit_rate = backtrade(user_sql, region=r, zy_rate=1.2, zs_rate=0.8, ma_line=ma)
-        # 追加写入结果
-        with open(result_file, 'a', encoding='utf-8') as f:
+    # # 组合所有参数
+    # tasks = []
+    # ma = 'ma30'  # 默认均线
+    # for r in region:
+    #     profit,profit_rate = backtrade(user_sql, region=r, zy_rate=1.2, zs_rate=0.8, ma_line=ma)
+    #     # 追加写入结果
+    #     with open(result_file, 'a', encoding='utf-8') as f:
                 
-                f.write(f"板块: {r}, 止盈率: {1.2}, 止损率: {0.8}, 均线: {ma}, 盈利: {profit:.2f}, 收益率: {profit_rate:.2f}%\n")
+    #             f.write(f"板块: {r}, 止盈率: {1.2}, 止损率: {0.8}, 均线: {ma}, 盈利: {profit:.2f}, 收益率: {profit_rate:.2f}%\n")
     
-    # 关闭日志文件
-    with open(result_file, 'a', encoding='utf-8') as f:
-        f.write("回测结束\n")
-        f.write("===========================================\n")
-        f.close()
+    # # 关闭日志文件
+    # with open(result_file, 'a', encoding='utf-8') as f:
+    #     f.write("回测结束\n")
+    #     f.write("===========================================\n")
+    #     f.close()
     # 运行回测
 
     # backtrade()
-    # profit, profit_rate = backtrade(user_sql,region="浙江板块", zy_rate=1.2, zs_rate=0.6, ma_line=ma_line[3])  # 使用ma30均线
-    # print(f"回测结果: 盈利: {profit:.2f}, 收益率: {profit_rate:.2f}%")
+    profit, profit_rate = backtrade(user_sql,region="江苏板块", zy_rate=1.1, zs_rate=0.9, ma_line=ma_line[0])  # 使用ma30均线
+    print(f"回测结果: 盈利: {profit:.2f}, 收益率: {profit_rate:.2f}%")
     
 
-    # from backtest_report_generator import main
-    # main()
+    from backtest_report_generator import main
+    main()

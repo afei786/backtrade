@@ -85,14 +85,19 @@ class StockBacktest:
 
     def _init_log(self):
         """初始化日志文件"""
-        self.log = open(self.log_file_name, 'w', encoding='utf-8')
-        self.log.write(f"回测日志 - 初始资本: {self.initial_capital}\n")
-        self.log.write("===========================================\n")
+        # 关闭日志系统，不再记录持仓和买卖
+        self.log = None
+        # 原代码注释掉
+        # self.log = open(self.log_file_name, 'w', encoding='utf-8')
+        # self.log.write(f"回测日志 - 初始资本: {self.initial_capital}\n")
+        # self.log.write("===========================================\n")
 
     def log_message(self, message: str):
         """记录日志消息"""
-        log_entry = f"[{datetime.strftime(self.current_date, '%Y-%m-%d')}] {message}"
-        self.log.write(log_entry + "\n")
+        # 关闭日志系统，不再记录消息
+        if self.log:
+            log_entry = f"[{datetime.strftime(self.current_date, '%Y-%m-%d')}] {message}"
+            # self.log.write(log_entry + "\n")
         # print(log_entry)
     
     def buy(self, stock: str, price: float, amount: int, additional: bool = False):
@@ -371,15 +376,8 @@ class StockBacktest:
 
     def close_log(self):
         """关闭日志文件"""
-
-        for stock in self.position_log:
-            self.log.write(f"{stock} 是否持仓: {self.position_log[stock]['is_position']}, 持仓数：{self.position_log[stock]['position']}, 成本价：{self.position_log[stock]['cost_price']:.2f}, ")
-            self.log.write(f"现价：{self.position_log[stock]['price']:.2f}, 盈亏：{float(self.position_log[stock]['profit']):.2f}\n")
+        # 不再写入日志文件，但保留数据处理部分
         
-        self.log.write("===========================================\n")
-        self.log.write("回测结束\n")
-        self.log.close()
-
         # 将字典转为DataFrame，并将外层键作为一列
         df = pd.DataFrame.from_dict(self.result, orient='index').reset_index()
         df.columns = ['trade_date', 'total_profit_rate', 'total_value', 'cash', 'market_cap', 'index_total_profit_rate', 'trade_log']
@@ -430,33 +428,20 @@ def run_backtest_task(args):
     # 每个进程内新建数据库连接，避免多进程共享同一个连接
     user_sql = PySQL(**user_sql_config)
     user_sql.connect()
-    profit, profit_rate = backtrade(user_sql, region=r, zy_rate=zyr, zs_rate=zsr, ma_line=ma)
-    user_sql.close()
-    return (r, zyr, zsr, ma, profit, profit_rate)
+    try:
+        profit, profit_rate = backtrade(user_sql, region=r, zy_rate=zyr, zs_rate=zsr, ma_line=ma)
+        result = (r, zyr, zsr, ma, profit, profit_rate)
+    except Exception as e:
+        print(f"回测任务出错: {e}")
+        result = (r, zyr, zsr, ma, 0, 0)  # 出错时返回零收益
+    finally:
+        user_sql.close()
+    return result
 
 
-def parse_finished_tasks(result_file):
-    finished = set()
-    if not os.path.exists(result_file):
-        return finished
-    with open(result_file, 'r', encoding='utf-8') as f:
-        for line in f:
-            if line.startswith("板块:"):
-                # 板块: {r}, 止盈率: {zyr}, 止损率: {zsr}, 均线: {ma}, ...
-                try:
-                    parts = line.strip().split(',')
-                    r = parts[0].split(':')[1].strip()
-                    zyr = float(parts[1].split(':')[1].strip())
-                    zsr = float(parts[2].split(':')[1].strip())
-                    ma = parts[3].split(':')[1].strip()
-                    finished.add((r, zyr, zsr, ma))
-                except Exception:
-                    continue
-    return finished
+
 
 if __name__ == '__main__':
-
-
     # 从数据库获取数据
     user_sql_config = {
         'host': 'localhost',
@@ -477,13 +462,11 @@ if __name__ == '__main__':
     ma_line = ['ma5', 'ma10', 'ma20', 'ma30', 'ma45', 'ma60']  # 均线列表
 
     result_file = 'backtest_results1.txt'
-    # finished_tasks = parse_finished_tasks(result_file)
 
     # 创建日志文件
     with open(result_file, 'w', encoding='utf-8') as f:
         f.write("回测开始\n")
         f.write("===========================================\n")
-        f.close()
 
     # 组合所有参数
     tasks = []
@@ -491,7 +474,6 @@ if __name__ == '__main__':
         for zyr in zy_rate:
             for zsr in zs_rate:
                 for ma in ma_line:
-                    # if (r, zyr, zsr, ma) not in finished_tasks:
                     tasks.append((user_sql_config, r, zyr, zsr, ma))
 
     print(f"剩余未完成任务数: {len(tasks)}")
@@ -502,25 +484,26 @@ if __name__ == '__main__':
             f.write("所有参数组合已完成，无需重复回测。\n")
     else:
         # 并发执行
+        results = []
         with concurrent.futures.ProcessPoolExecutor() as executor:
-            results = list(executor.map(run_backtest_task, tasks))
-
-        # 追加写入结果
-        with open(result_file, 'a', encoding='utf-8') as f:
-            for r, zyr, zsr, ma, profit, profit_rate in results:
-                f.write(f"板块: {r}, 止盈率: {zyr}, 止损率: {zsr}, 均线: {ma}, 盈利: {profit:.2f}, 收益率: {profit_rate:.2f}%\n")
+            # 使用list()强制等待所有任务完成
+            future_to_task = {executor.submit(run_backtest_task, task): task for task in tasks}
+            for future in concurrent.futures.as_completed(future_to_task):
+                try:
+                    result = future.result()
+                    results.append(result)
+                    # 每完成一个任务就立即写入结果文件，避免全部完成后一次性写入
+                    with open(result_file, 'a', encoding='utf-8') as f:
+                        r, zyr, zsr, ma, profit, profit_rate = result
+                        f.write(f"板块: {r}, 止盈率: {zyr}, 止损率: {zsr}, 均线: {ma}, 盈利: {profit:.2f}, 收益率: {profit_rate:.2f}%\n")
+                except Exception as exc:
+                    task = future_to_task[future]
+                    print(f'任务 {task} 生成了异常: {exc}')
+                    # 记录失败的任务
+                    with open(result_file, 'a', encoding='utf-8') as f:
+                        f.write(f"任务失败: {task}, 错误: {exc}\n")
     
     # 关闭日志文件
     with open(result_file, 'a', encoding='utf-8') as f:
         f.write("回测结束\n")
         f.write("===========================================\n")
-        f.close()
-    # 运行回测
-
-    # backtrade()
-    # profit, profit_rate = backtrade(user_sql,region="浙江板块", zy_rate=1.2, zs_rate=0.6, ma_line=ma_line[3])  # 使用ma30均线
-    # print(f"回测结果: 盈利: {profit:.2f}, 收益率: {profit_rate:.2f}%")
-    
-
-    # from backtest_report_generator import main
-    # main()
