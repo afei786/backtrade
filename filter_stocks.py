@@ -2,7 +2,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 from pysql import PySQL
 
-def filter_stocks_by_price_range(start_date, min_price=5, max_price=15, max_days_forward=10):
+def filter_stocks_by_price_range(start_date, min_price=5, max_price=15,min_market_cap=30, max_market_cap=180,region=None, max_days_forward=10):
     """
     筛选起始日期股票价格在指定范围内的股票
     如果起始日期没有数据，顺延到下一个交易日
@@ -27,10 +27,16 @@ def filter_stocks_by_price_range(start_date, min_price=5, max_price=15, max_days
     sql.connect()
     
     # 获取所有股票代码
+    if region is None or region == 'all' or region == '-':
+        where=f'market_cap > {min_market_cap} AND market_cap < {max_market_cap} AND is_st = 0'  # 排除ST股票
+    else:
+        where=f'market_cap > {min_market_cap} AND market_cap < {max_market_cap} AND is_st = 0 and region = "{region}"'  # 排除ST股票
+        
     stock_list = sql.select(
         'stock_info',
         columns=['stock_code'],
-        where='market_cap > 10 AND market_cap < 100 AND is_st = 0'  # 排除ST股票
+        where=where
+        
     )
     stock_codes = [item['stock_code'] for item in stock_list]
     

@@ -394,10 +394,7 @@ def backtrade(user_sql, region, zy_rate=1.2, zs_rate=0.8, ma_line='ma30'):
 
     start_date = '2025-01-01'
     end_date = '2025-06-01'
-    result = filter_stocks_by_price_range(start_date, min_price=10, max_price=15, min_market_cap=30, max_market_cap=180, region=region)
-    if not result:
-        print(f"没有找到符合条件的股票，区域: {region}, 起始日期: {start_date}, 结束日期: {end_date}")
-        return 0, 0
+    result = filter_stocks_by_price_range(start_date, min_price=5, max_price=15, min_market_cap=30, max_market_cap=180, region=region)
     stock_list = [item['stock_code'] for item in result]
 
     # 随机打乱股票列表
@@ -428,7 +425,38 @@ def backtrade(user_sql, region, zy_rate=1.2, zs_rate=0.8, ma_line='ma30'):
     return profit, profit_rate
 
 
+def run_backtest_task(args):
+    user_sql_config, r, zyr, zsr, ma = args
+    # 每个进程内新建数据库连接，避免多进程共享同一个连接
+    user_sql = PySQL(**user_sql_config)
+    user_sql.connect()
+    profit, profit_rate = backtrade(user_sql, region=r, zy_rate=zyr, zs_rate=zsr, ma_line=ma)
+    user_sql.close()
+    return (r, zyr, zsr, ma, profit, profit_rate)
+
+
+def parse_finished_tasks(result_file):
+    finished = set()
+    if not os.path.exists(result_file):
+        return finished
+    with open(result_file, 'r', encoding='utf-8') as f:
+        for line in f:
+            if line.startswith("板块:"):
+                # 板块: {r}, 止盈率: {zyr}, 止损率: {zsr}, 均线: {ma}, ...
+                try:
+                    parts = line.strip().split(',')
+                    r = parts[0].split(':')[1].strip()
+                    zyr = float(parts[1].split(':')[1].strip())
+                    zsr = float(parts[2].split(':')[1].strip())
+                    ma = parts[3].split(':')[1].strip()
+                    finished.add((r, zyr, zsr, ma))
+                except Exception:
+                    continue
+    return finished
+
 if __name__ == '__main__':
+
+
     # 从数据库获取数据
     user_sql_config = {
         'host': 'localhost',
@@ -448,7 +476,7 @@ if __name__ == '__main__':
     zs_rate = [0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6]  # 止损率列表
     ma_line = ['ma5', 'ma10', 'ma20', 'ma30', 'ma45', 'ma60']  # 均线列表
 
-    result_file = 'backtest_results2.txt'
+    result_file = 'backtest_results1.txt'
     # finished_tasks = parse_finished_tasks(result_file)
 
     # 创建日志文件
@@ -459,13 +487,28 @@ if __name__ == '__main__':
 
     # 组合所有参数
     tasks = []
-    ma = 'ma30'  # 默认均线
     for r in region:
-        profit,profit_rate = backtrade(user_sql, region=r, zy_rate=1.2, zs_rate=0.8, ma_line=ma)
+        for zyr in zy_rate:
+            for zsr in zs_rate:
+                for ma in ma_line:
+                    # if (r, zyr, zsr, ma) not in finished_tasks:
+                    tasks.append((user_sql_config, r, zyr, zsr, ma))
+
+    print(f"剩余未完成任务数: {len(tasks)}")
+    if not tasks:
+        print("所有参数组合已完成，无需重复回测。")
+        # 新增：即使没有新任务也写入一行提示到结果文件
+        with open(result_file, 'a', encoding='utf-8') as f:
+            f.write("所有参数组合已完成，无需重复回测。\n")
+    else:
+        # 并发执行
+        with concurrent.futures.ProcessPoolExecutor() as executor:
+            results = list(executor.map(run_backtest_task, tasks))
+
         # 追加写入结果
         with open(result_file, 'a', encoding='utf-8') as f:
-                
-                f.write(f"板块: {r}, 止盈率: {1.2}, 止损率: {0.8}, 均线: {ma}, 盈利: {profit:.2f}, 收益率: {profit_rate:.2f}%\n")
+            for r, zyr, zsr, ma, profit, profit_rate in results:
+                f.write(f"板块: {r}, 止盈率: {zyr}, 止损率: {zsr}, 均线: {ma}, 盈利: {profit:.2f}, 收益率: {profit_rate:.2f}%\n")
     
     # 关闭日志文件
     with open(result_file, 'a', encoding='utf-8') as f:

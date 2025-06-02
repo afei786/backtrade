@@ -302,7 +302,7 @@ class PySQL:
         for v in append_data.values():
             append_params.extend([v, f",{v}"])  # Note the comma
         
-        all_params = tuple(append_params) + (params if params else ())
+        all_params = tuple(append_params) + (params if params else())
         
         sql = f"UPDATE `{table_name}` SET {set_clause} WHERE {where}"
         return self.execute(sql, all_params)
@@ -358,6 +358,52 @@ class PySQL:
         sql = f"UPDATE `{table_name}` SET {set_clause} WHERE {where}"
         return self.execute(sql, all_params)
     
+    def batch_update(self, table_name, data: List[Dict[str, Any]], key_fields: List[str] = None) -> int:
+        """
+        批量根据主键（可多个字段）更新多字段数据到指定表中
+        data: 每个元素为{'id': ..., 'trade_date': ..., 'ma5': ..., ...}
+        key_fields: 主键字段名列表，如 ['id', 'trade_date']
+        """
+        if not data:
+            return 0
+        if key_fields is None:
+            key_fields = ['stock_code']  # 默认主键
+
+        # 所有字段
+        all_keys = set()
+        for row in data:
+            all_keys.update(row.keys())
+        for k in key_fields:
+            all_keys.discard(k)
+        fields = list(all_keys)
+        if not fields:
+            return 0
+
+        set_clause = ", ".join([f"`{field}` = %s" for field in fields])
+        where_clause = " AND ".join([f"`{k}` = %s" for k in key_fields])
+        sql = f"UPDATE `{table_name}` SET {set_clause} WHERE {where_clause}"
+
+        values = []
+        for row in data:
+            if not all(k in row for k in key_fields):
+                continue
+            row_values = [row.get(field) for field in fields] + [row[k] for k in key_fields]
+            values.append(tuple(row_values))
+
+        try:
+            if not self.connection or not self.connection.is_connected():
+                self.connect()
+            self.cursor.executemany(sql, values)
+            self.connection.commit()
+            affected_rows = self.cursor.rowcount
+            print(f"成功批量更新 {affected_rows} 行数据到表 {table_name}")
+            return affected_rows
+        except Error as e:
+            self.connection.rollback()
+            print(f"批量更新数据失败: {e}")
+            raise
+
+        
     def __enter__(self):
         """支持上下文管理协议"""
         self.connect()
@@ -373,13 +419,21 @@ class PySQL:
         self.connection.commit()
 
 if __name__ =="__main__":
-    pysql = PySQL(host="192.168.1.149", user="user", password="123456", database="crrc_alstom")
-    # pysql = PySQL(host='127.0.0.1', user='afei', password='sf123456', database='test')
-    import time
-    t1 = time.time()
-    pysql.connect()
-    print("连接用时：", time.time() - t1)
-
+    # pysql = PySQL(host="192.168.1.149", user="user", password="123456", database="crrc_alstom")
+    # pysql = PySQL(host='127.0.0.1', user='afei', password='sf123456', database='stock')
+    # pysql.connect()
+    user_sql = PySQL(
+        host='localhost',
+        user='afei',
+        password='sf123456',
+        database='stock',
+        port=3306
+    )
+    user_sql.connect()
+    region = user_sql.select('stock_info', columns=['region'])  # 获取所有非ST股票
+    region = [item['region'] for item in region]
+    region = list(set(region))  # 去重
+    print(len(region))
     # 创建表
     # columns = {
     #     'id': 'INT AUTO_INCREMENT',
@@ -414,7 +468,7 @@ if __name__ =="__main__":
     # # results = pysql.select('device_list',)
     # results = pysql.select("orders", where="id = %s", params=("GD0000092",))
     # print(results[0])
-    pysql.delete('project_list', f"name = test")
+    # pysql.delete('project_list', f"name = test")
 
 
     # print("查询用时：", time.time() - t2)
@@ -430,5 +484,20 @@ if __name__ =="__main__":
     #     print(row)
     # pysql.table_exists('users1')
     # 插入数据
-    # data = 
-    pysql.close()
+    # data = [{
+    #     'id': 1,
+    #     'trade_date': '2023-01-05',
+    #     'ma5': 11.0,
+    #     'ma10': 10.0,
+    #     'ma20': 10.0,
+    #     },
+    #     {'id': 1,
+    #     'trade_date': '2023-01-07',
+    #     'ma5': 10.0,
+    #     'ma10': 12.0,
+    #     'ma20': 10.0,
+    #     }]
+    # # 假设你的主键是 id 和 trade_date
+    # pysql.batch_update('stock_ma', data, key_fields=['id', 'trade_date'])
+
+    # pysql.close()

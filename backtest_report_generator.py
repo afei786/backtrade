@@ -393,7 +393,7 @@ def create_total_returns_chart(df):
 
 def create_trade_records_table(df):
     """
-    创建交易记录表格
+    创建交易记录表格，添加滚动条容器
 
     参数:
         df (pandas.DataFrame): 处理后的数据
@@ -403,16 +403,18 @@ def create_trade_records_table(df):
     """
     table_html = """
         <h2>交易记录</h2>
-        <table>
-            <tr>
-                <th>日期</th>
-                <th>操作</th>
-                <th>股票</th>
-                <th>数量</th>
-                <th>价格</th>
-                <th>金额</th>
-                <th>盈亏</th>
-            </tr>
+        <div class="table-container">
+            <table class="trade-records-table">
+                <thead>
+                    <tr>
+                        <th>日期</th>
+                        <th>操作</th>
+                        <th>股票</th>
+                        <th>数量</th>
+                        <th>价格</th>
+                    </tr>
+                </thead>
+                <tbody>
     """
 
     for _, row in df.iterrows():
@@ -440,8 +442,6 @@ def create_trade_records_table(df):
                         <td>{stock}</td>
                         <td>{amount}</td>
                         <td>{price}</td>
-                        <td>{value}元</td>
-                        <td>{profit if profit != '' else '-'}</td>
                     </tr>
                 """
             # 卖出/清仓
@@ -456,12 +456,100 @@ def create_trade_records_table(df):
                         <td>{stock}</td>
                         <td>{amount}</td>
                         <td>{price}</td>
-                        <td>{value}元</td>
-                        <td>{profit if profit != '' else '-'}</td>
                     </tr>
                 """
-    table_html += "</table>"
+    table_html += """
+                </tbody>
+            </table>
+        </div>
+    """
     return table_html
+
+def create_position_profit_table():
+    """
+    创建历史持仓收益表格，从position_log.csv读取数据
+
+    返回:
+        str: 历史持仓收益表格HTML代码
+    """
+    try:
+        # 读取position_log.csv文件
+        position_df = pd.read_csv('position_log.csv')
+        
+        # 如果数据为空，返回空表格
+        if position_df.empty:
+            return "<h2>历史持仓收益</h2><p>无持仓数据</p>"
+        
+        # 计算收益率
+        position_df['profit_rate'] = (position_df['price'] / position_df['cost_price'] - 1) * 100
+        
+        # 格式化数据
+        position_df['profit_rate'] = position_df['profit_rate'].apply(lambda x: "{:.2f}%".format(x))
+        position_df['profit'] = position_df['profit'].apply(lambda x: "{:.2f}".format(float(x)))
+        position_df['cost_price'] = position_df['cost_price'].apply(lambda x: "{:.2f}".format(float(x)))
+        position_df['price'] = position_df['price'].apply(lambda x: "{:.2f}".format(float(x)))
+        
+        # 创建表格HTML头部
+        table_html = """
+            <h2>历史持仓收益</h2>
+            <div class="table-container">
+                <table class="position-profit-table sortable">
+                    <thead>
+                        <tr>
+                            <th class="sortable" data-sort="string">股票代码</th>
+                            <th class="sortable" data-sort="string">持仓状态</th>
+                            <th class="sortable" data-sort="number">持仓数量</th>
+                            <th class="sortable" data-sort="number">成本价</th>
+                            <th class="sortable" data-sort="number">现价</th>
+                            <th class="sortable" data-sort="number">收益</th>
+                            <th class="sortable" data-sort="number">收益率</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+        """
+        
+        # 添加每一行数据
+        for _, row in position_df.iterrows():
+            status = "持有中" if row['is_position'] else "已清仓"
+            status_class = "holding" if row['is_position'] else "cleared"
+            profit_class = "positive" if float(row['profit']) >= 0 else "negative"
+            
+            row_html = """
+                <tr>
+                    <td>{stock_code}</td>
+                    <td class="{status_class}">{status}</td>
+                    <td>{position}</td>
+                    <td>{cost_price}</td>
+                    <td>{price}</td>
+                    <td class="{profit_class}">{profit}</td>
+                    <td class="{profit_class}">{profit_rate}</td>
+                </tr>
+            """.format(
+                stock_code=row['stock_code'],
+                status_class=status_class,
+                status=status,
+                position=row['position'],
+                cost_price=row['cost_price'],
+                price=row['price'],
+                profit_class=profit_class,
+                profit=row['profit'],
+                profit_rate=row['profit_rate']
+            )
+            
+            table_html += row_html
+        
+        # 添加表格尾部
+        table_html += """
+                    </tbody>
+                </table>
+            </div>
+        """
+        
+        return table_html
+        
+    except Exception as e:
+        print(f"创建历史持仓收益表格失败: {e}")
+        return "<h2>历史持仓收益</h2><p>无法加载持仓数据</p>"
 
 def generate_html_report(df, metrics, output_file="backtest_report.html"):
     """
@@ -480,6 +568,9 @@ def generate_html_report(df, metrics, output_file="backtest_report.html"):
     
     # 创建交易记录表格
     trade_records_table = create_trade_records_table(df)
+    
+    # 创建历史持仓收益表格
+    position_profit_table = create_position_profit_table()
     
     # 指标颜色类
     def get_color_class(value):
@@ -565,6 +656,73 @@ def generate_html_report(df, metrics, output_file="backtest_report.html"):
                     .chart-container {{
                         margin-bottom: 30px;
                     }}
+                    /* 添加表格容器样式 */
+                    .table-container {{
+                        max-height: 400px;
+                        overflow-y: auto;
+                        margin-bottom: 20px;
+                        border: 1px solid #ddd;
+                        border-radius: 5px;
+                    }}
+                    .trade-records-table {{
+                        width: 100%;
+                        border-collapse: collapse;
+                    }}
+                    .trade-records-table thead {{
+                        position: sticky;
+                        top: 0;
+                        background-color: #f2f2f2;
+                        z-index: 1;
+                    }}
+                    .trade-records-table th {{
+                        border-bottom: 2px solid #ddd;
+                        padding: 12px 10px;
+                    }}
+                    .trade-records-table td {{
+                        padding: 10px;
+                        border-bottom: 1px solid #ddd;
+                    }}
+                    .trade-records-table tbody tr:hover {{
+                        background-color: #f5f5f5;
+                    }}
+                    /* 历史持仓收益表格样式 */
+                    .position-profit-table {{
+                        width: 100%;
+                        border-collapse: collapse;
+                    }}
+                    .position-profit-table thead {{
+                        position: sticky;
+                        top: 0;
+                        background-color: #f2f2f2;
+                        z-index: 1;
+                    }}
+                    .position-profit-table th {{
+                        border-bottom: 2px solid #ddd;
+                        padding: 12px 10px;
+                        cursor: pointer;
+                    }}
+                    .position-profit-table th:hover {{
+                        background-color: #e0e0e0;
+                    }}
+                    .position-profit-table td {{
+                        padding: 10px;
+                        border-bottom: 1px solid #ddd;
+                    }}
+                    .position-profit-table tbody tr:hover {{
+                        background-color: #f5f5f5;
+                    }}
+                    .sort-indicator {{
+                        display: inline-block;
+                        margin-left: 5px;
+                        font-size: 0.8em;
+                    }}
+                    .holding {{
+                        color: #0066cc;
+                        font-weight: bold;
+                    }}
+                    .cleared {{
+                        color: #666;
+                    }}
                     /* 添加懒加载样式 */
                     .lazy-chart {{
                         min-height: 400px;
@@ -641,6 +799,69 @@ def generate_html_report(df, metrics, output_file="backtest_report.html"):
                         }});
                     }}
                     
+                    // 表格排序功能
+                    document.addEventListener('DOMContentLoaded', function() {{
+                        // 初始化表格排序
+                        var tables = document.querySelectorAll('table.sortable');
+                        tables.forEach(function(table) {{
+                            var headers = table.querySelectorAll('th.sortable');
+                            headers.forEach(function(header, index) {{
+                                header.addEventListener('click', function() {{
+                                    sortTable(table, index, header.getAttribute('data-sort'));
+                                }});
+                                // 添加排序指示器
+                                header.innerHTML += ' <span class="sort-indicator">⇅</span>';
+                            }});
+                        }});
+                        
+                        // 表格排序函数
+                        function sortTable(table, columnIndex, dataType) {{
+                            var rows = Array.from(table.querySelectorAll('tbody tr'));
+                            var header = table.querySelectorAll('th.sortable')[columnIndex];
+                            var currentDirection = header.getAttribute('data-direction') || 'asc';
+                            var newDirection = currentDirection === 'asc' ? 'desc' : 'asc';
+                            
+                            // 更新所有表头的排序指示器
+                            table.querySelectorAll('th.sortable').forEach(function(th) {{
+                                th.querySelector('.sort-indicator').textContent = '⇅';
+                                th.removeAttribute('data-direction');
+                            }});
+                            
+                            // 更新当前表头的排序指示器和方向
+                            header.setAttribute('data-direction', newDirection);
+                            header.querySelector('.sort-indicator').textContent = newDirection === 'asc' ? '↑' : '↓';
+                            
+                            // 排序行
+                            rows.sort(function(rowA, rowB) {{
+                                var cellA = rowA.querySelectorAll('td')[columnIndex].textContent.trim();
+                                var cellB = rowB.querySelectorAll('td')[columnIndex].textContent.trim();
+                                
+                                // 根据数据类型进行比较
+                                if (dataType === 'number') {{
+                                    // 提取数字部分
+                                    var numA = parseFloat(cellA.replace(/[^-0-9.]/g, ''));
+                                    var numB = parseFloat(cellB.replace(/[^-0-9.]/g, ''));
+                                    
+                                    if (isNaN(numA)) numA = 0;
+                                    if (isNaN(numB)) numB = 0;
+                                    
+                                    return newDirection === 'asc' ? numA - numB : numB - numA;
+                                }} else {{
+                                    // 字符串比较
+                                    return newDirection === 'asc' 
+                                        ? cellA.localeCompare(cellB) 
+                                        : cellB.localeCompare(cellA);
+                                }}
+                            }});
+                            
+                            // 重新排列行
+                            var tbody = table.querySelector('tbody');
+                            rows.forEach(function(row) {{
+                                tbody.appendChild(row);
+                            }});
+                        }}
+                    }});
+                    
                     // 页面加载完成后初始化
                     document.addEventListener('DOMContentLoaded', function() {{
                         // 初始检查
@@ -708,6 +929,7 @@ def generate_html_report(df, metrics, output_file="backtest_report.html"):
             </div>
             
             {trade_records_table}
+            {position_profit_table}
                 </div>
             </body>
             </html>
