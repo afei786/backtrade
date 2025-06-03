@@ -95,10 +95,11 @@ class StockBacktest:
     def log_message(self, message: str):
         """记录日志消息"""
         # 关闭日志系统，不再记录消息
-        if self.log:
-            log_entry = f"[{datetime.strftime(self.current_date, '%Y-%m-%d')}] {message}"
+        # if self.log:
+            # log_entry = f"[{datetime.strftime(self.current_date, '%Y-%m-%d')}] {message}"
             # self.log.write(log_entry + "\n")
         # print(log_entry)
+        pass
     
     def buy(self, stock: str, price: float, amount: int, additional: bool = False):
         """买入操作"""
@@ -225,6 +226,7 @@ class StockBacktest:
                         
                     self.open_price = float(stock_data['open'].values[0])
                     self.close_price = float(stock_data['close'].values[0])
+                    self.ma5 = float(stock_data['ma5'].values[0])
                     self.check_position(stock)
                 self.log_message(f'盘前整理完成')
 
@@ -329,7 +331,9 @@ class StockBacktest:
     
     def check_position(self, stock):
         """检查持仓情况"""
-        if self.open_price/self.stocks_position[stock]['cost_price'] > self.zy_rate:  # 盈利15%卖出
+        # if self.open_price/self.stocks_position[stock]['cost_price'] > self.zy_rate:  # 盈利15%卖出
+        #     self.sell(stock, self.open_price, -1)
+        if self.open_price < self.ma5:  # 如果开盘价小于5日均线，则卖出
             self.sell(stock, self.open_price, -1)
         
         elif self.open_price/self.stocks_position[stock]['cost_price'] < self.zs_rate :  # 亏损20%补仓
@@ -418,7 +422,7 @@ def backtrade(user_sql, region, zy_rate=1.2, zs_rate=0.8, ma_line='ma30'):
     df = df[['stock_code', 'trade_date', 'open', 'high', 'low', 'close', 'change_value','pct_change','ma5','ma10','ma20','ma30','ma45','ma60']]
     
     # 使用方法1：运行回测并显示进度条（默认）
-    mybt = StockBacktest(df, initial_capital=100000, stock_list=stock_list, show_progress=True, zy_rate=zy_rate, zs_rate=zs_rate, ma_line=ma_line)
+    mybt = StockBacktest(df, initial_capital=100000, stock_list=stock_list, show_progress=False, zy_rate=zy_rate, zs_rate=zs_rate, ma_line=ma_line)
     profit, profit_rate = mybt.run_backtest()
     return profit, profit_rate
 
@@ -429,7 +433,7 @@ def run_backtest_task(args):
     user_sql = PySQL(**user_sql_config)
     user_sql.connect()
     try:
-        profit, profit_rate = backtrade(user_sql, region=r, zy_rate=zyr, zs_rate=zsr, ma_line=ma)
+        profit, profit_rate = backtrade(user_sql, region=r, zy_rate=zyr, zs_rate=zsr, ma_line=ma,)
         result = (r, zyr, zsr, ma, profit, profit_rate)
     except Exception as e:
         print(f"回测任务出错: {e}")
@@ -461,7 +465,7 @@ if __name__ == '__main__':
     zs_rate = [0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6]  # 止损率列表
     ma_line = ['ma5', 'ma10', 'ma20', 'ma30', 'ma45', 'ma60']  # 均线列表
 
-    result_file = 'backtest_results1.txt'
+    result_file = 'backtest_results2.txt'
 
     # 创建日志文件
     with open(result_file, 'w', encoding='utf-8') as f:
@@ -484,22 +488,48 @@ if __name__ == '__main__':
             f.write("所有参数组合已完成，无需重复回测。\n")
     else:
         # 并发执行
-        results = []
-        with concurrent.futures.ProcessPoolExecutor() as executor:
-            # 使用list()强制等待所有任务完成
+        # results = []
+        # with concurrent.futures.ProcessPoolExecutor() as executor:
+        #     # 使用list()强制等待所有任务完成
+        #     future_to_task = {executor.submit(run_backtest_task, task): task for task in tasks}
+        #     for future in concurrent.futures.as_completed(future_to_task):
+        #         try:
+        #             result = future.result()
+        #             results.append(result)
+        #             # 每完成一个任务就立即写入结果文件，避免全部完成后一次性写入
+        #             with open(result_file, 'a', encoding='utf-8') as f:
+        #                 r, zyr, zsr, ma, profit, profit_rate = result
+        #                 f.write(f"板块: {r}, 止盈率: {zyr}, 止损率: {zsr}, 均线: {ma}, 盈利: {profit:.2f}, 收益率: {profit_rate:.2f}%\n")
+        #         except Exception as exc:
+        #             task = future_to_task[future]
+        #             print(f'任务 {task} 生成了异常: {exc}')
+        #             # 记录失败的任务
+        #             with open(result_file, 'a', encoding='utf-8') as f:
+        #                 f.write(f"任务失败: {task}, 错误: {exc}\n")
+
+        import os
+        import math
+        import concurrent.futures
+
+        # 计算可用的核心数（70% 四舍五入取整）
+        total_cores = os.cpu_count() or 1  # 避免 None 情况，默认为 1
+        max_workers = max(1, math.floor(total_cores * 0.7))  # 至少使用 1 个核心
+        print(f"使用 {max_workers} 个进程进行并发回测")
+
+        with concurrent.futures.ProcessPoolExecutor(max_workers=max_workers) as executor:  # <-- 关键修改
+            results = []
             future_to_task = {executor.submit(run_backtest_task, task): task for task in tasks}
+            
             for future in concurrent.futures.as_completed(future_to_task):
                 try:
                     result = future.result()
                     results.append(result)
-                    # 每完成一个任务就立即写入结果文件，避免全部完成后一次性写入
                     with open(result_file, 'a', encoding='utf-8') as f:
                         r, zyr, zsr, ma, profit, profit_rate = result
                         f.write(f"板块: {r}, 止盈率: {zyr}, 止损率: {zsr}, 均线: {ma}, 盈利: {profit:.2f}, 收益率: {profit_rate:.2f}%\n")
                 except Exception as exc:
                     task = future_to_task[future]
                     print(f'任务 {task} 生成了异常: {exc}')
-                    # 记录失败的任务
                     with open(result_file, 'a', encoding='utf-8') as f:
                         f.write(f"任务失败: {task}, 错误: {exc}\n")
     
