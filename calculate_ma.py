@@ -247,13 +247,13 @@ def main(stock_code,start_date, end_date):
         result_df = result_df.where(pd.notnull(result_df), 0.0)
         
         # result_df = result_df['stock_code', 'trade_date', 'ma5' ]
-        print(result_df)
+        # print(result_df)
         # 显示结果
         print(f"计算完成，共 {len(result_df)} 条记录")
 
         # 转为列表嵌套字典
         result_list = result_df.to_dict(orient='records')
-        print(f"结果数据: {result_list[:5]}...")  # 只显示前5条记录
+        # print(f"结果数据: {result_list[:5]}...")  # 只显示前5条记录
 
         # 更新到数据库
         db_conn.batch_update('stock_daily_k', result_list, key_fields=['stock_code', 'trade_date'])

@@ -4,8 +4,8 @@ import decimal
 from pysql import PySQL
 from tqdm import tqdm  # 导入tqdm库
 from filter_stocks import filter_stocks_by_price_range
-import concurrent.futures
-import os
+import random
+
 
 
 class StockBacktest:
@@ -231,6 +231,7 @@ class StockBacktest:
             market_cap = 0  # 持仓市值
             total_profit = 0  # 总盈利
             stock_num = 0  # 持仓股票数量
+            self.day_profit = 0  # 当日盈利
 
             for stock in list(self.stocks_position.keys()):  # 使用列表副本遍历，避免在遍历过程中修改字典结构
                 stock_data = current_data[current_data['stock_code'] == stock]
@@ -256,6 +257,7 @@ class StockBacktest:
                 close_price = self.stocks_position[stock]['close_price']
                 profit = (self.close_price - self.stocks_position[stock]['cost_price']) * available_amount  # 累计盈利
                 day_profit = (self.close_price - self.open_price) * available_amount  # 当日盈利
+                self.day_profit += day_profit
 
 
 
@@ -273,7 +275,7 @@ class StockBacktest:
             total_profit = market_cap + float(self.cash) - float(self.initial_capital)
             total_profit_rate = total_profit/self.initial_capital*100  # 总收益率
             total_assets = market_cap + float(self.cash)  # 总资产
-            self.log_message(f"当日持仓总市值: {market_cap:.2f}，现金: {self.cash:.2f}，总资产: {total_assets:.2f}，总盈利: {total_profit:.2f}, 总收益率: {total_profit_rate:.2f}% ")
+            self.log_message(f"当日盈利：{self.day_profit:.2f}, 持仓总市值: {market_cap:.2f}，现金: {self.cash:.2f}，总资产: {total_assets:.2f}，总盈利: {total_profit:.2f}, 总收益率: {total_profit_rate:.2f}% ")
             self.profit = total_profit
             self.profit_rate = total_profit_rate
             self.log_message(f"当日持仓股票数量: {stock_num}")
@@ -304,7 +306,7 @@ class StockBacktest:
             
         for stock in self.stock_pool:
             if self.cash < 5000:
-                self.log_message("资金不足5000，暂停交易，等待资金恢复")
+                self.log_message("资金不足5000，暂停交易，保留流动资金")
                 return
             if len(self.stocks_position) > self.max_stock_num:
                 self.log_message(f"股票数量超过{self.max_stock_num}，暂停交易，等待股票数量减少")
@@ -335,9 +337,13 @@ class StockBacktest:
         盘中买入策略
         """
         if stock not in self.stocks_position and stock not in self.zy_list:
-            if self.open_price <= self.ma or self.low_price <= self.ma:  # 如果开盘价小于30日均线，则买入
+            if 5<= self.open_price <= 15 and self.open_price <= self.ma:
                 self.stocks_position[stock] = {'available': 0, 'unavailable': 0, 'cost_price': 0.0, 'close_price': 0.0}  #, 'sell_amount': 0}
                 self.buy(stock, self.open_price, 100)  # 建仓
+            # if 5<= self.low_price <= 15 and self.open_price <= self.ma:  # 如果开盘价小于30日均线，则买入
+            #     self.stocks_position[stock] = {'available': 0, 'unavailable': 0, 'cost_price': 0.0, 'close_price': 0.0}  #, 'sell_amount': 0}
+            #     self.buy(stock, self.low_price, 100)  # 建仓
+            
         
     def run_backtest(self):
         """运行回测过程"""
@@ -390,19 +396,16 @@ class StockBacktest:
         df1.columns = ['stock_code','is_position', 'position', 'cost_price', 'price', 'profit']
         df1.to_csv("position_log.csv", index=False, encoding='utf-8')
 
-def backtrade(user_sql, region, zy_rate=1.2, zs_rate=0.8, ma_line='ma30'):
+def backtrade(user_sql, region, zy_rate=1.2, zs_rate=0.8, ma_line='ma30', market_type=None):
 
-    start_date = '2025-01-01'
+    start_date = '2024-10-01'
     end_date = '2025-06-01'
-    result = filter_stocks_by_price_range(start_date, min_price=5, max_price=15, min_market_cap=30, max_market_cap=180, region=region)
-    if not result:
+    stock_list = filter_stocks_by_price_range(user_sql, min_price=5, max_price=15, min_market_cap=30, max_market_cap=180, region=region, not_market_type=market_type)
+    if not stock_list:
         print(f"没有找到符合条件的股票，区域: {region}, 起始日期: {start_date}, 结束日期: {end_date}")
-        return 0, 0
-    stock_list = [item['stock_code'] for item in result]
+        return -100, -100
 
     # 随机打乱股票列表
-    import random
-    random.seed(666)  # 设置随机种子以确保可重复性
     random.shuffle(stock_list)
     # stock_list = stock_list[:1000]
     
@@ -427,6 +430,51 @@ def backtrade(user_sql, region, zy_rate=1.2, zs_rate=0.8, ma_line='ma30'):
     profit, profit_rate = mybt.run_backtest()
     return profit, profit_rate
 
+def run_all_params():
+    # 从数据库获取数据
+    user_sql_config = {
+        'host': 'localhost',
+        'user': 'afei',
+        'password': 'sf123456',
+        'database': 'stock',
+        'port': 3306
+    }
+    user_sql = PySQL(**user_sql_config)
+    user_sql.connect()
+    region = user_sql.select('stock_info', columns=['region'])  # 获取所有非ST股票
+    region = [item['region'] for item in region]
+    region = list(set(region))  # 去重
+    # user_sql.close()
+
+    zy_rate = [1.1, 1.15, 1.2, 1.25, 1.3, 1.35, 1.4]  # 止盈率列表
+    zs_rate = [0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6]  # 止损率列表
+    ma_line = ['ma5', 'ma10', 'ma20', 'ma30', 'ma45', 'ma60']  # 均线列表
+
+    result_file = 'backtest_results2.txt'
+    # # finished_tasks = parse_finished_tasks(result_file)
+
+    # 创建日志文件
+    with open(result_file, 'w', encoding='utf-8') as f:
+        f.write("回测开始\n")
+        f.write("===========================================\n")
+        f.close()
+
+    # 组合所有参数
+    tasks = []
+    ma = 'ma30'  # 默认均线
+    for r in region:
+        profit,profit_rate = backtrade(user_sql, region=r, zy_rate=1.2, zs_rate=0.8, ma_line=ma)
+        # 追加写入结果
+        with open(result_file, 'a', encoding='utf-8') as f:
+                
+                f.write(f"板块: {r}, 止盈率: {1.2}, 止损率: {0.8}, 均线: {ma}, 盈利: {profit:.2f}, 收益率: {profit_rate:.2f}%\n")
+    
+    # 关闭日志文件
+    with open(result_file, 'a', encoding='utf-8') as f:
+        f.write("回测结束\n")
+        f.write("===========================================\n")
+        f.close()
+
 
 if __name__ == '__main__':
     # 从数据库获取数据
@@ -438,12 +486,8 @@ if __name__ == '__main__':
         'port': 3306
     }
     user_sql = PySQL(**user_sql_config)
-    # user_sql.connect()
-    # region = user_sql.select('stock_info', columns=['region'])  # 获取所有非ST股票
-    # region = [item['region'] for item in region]
-    # region = list(set(region))  # 去重
-    # user_sql.close()
-
+    user_sql.connect()
+    
     # zy_rate = [1.1, 1.15, 1.2, 1.25, 1.3, 1.35, 1.4]  # 止盈率列表
     # zs_rate = [0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6]  # 止损率列表
     ma_line = ['ma5', 'ma10', 'ma20', 'ma30', 'ma45', 'ma60']  # 均线列表
@@ -451,31 +495,13 @@ if __name__ == '__main__':
     # result_file = 'backtest_results2.txt'
     # # finished_tasks = parse_finished_tasks(result_file)
 
-    # # 创建日志文件
-    # with open(result_file, 'w', encoding='utf-8') as f:
-    #     f.write("回测开始\n")
-    #     f.write("===========================================\n")
-    #     f.close()
-
-    # # 组合所有参数
-    # tasks = []
-    # ma = 'ma30'  # 默认均线
-    # for r in region:
-    #     profit,profit_rate = backtrade(user_sql, region=r, zy_rate=1.2, zs_rate=0.8, ma_line=ma)
-    #     # 追加写入结果
-    #     with open(result_file, 'a', encoding='utf-8') as f:
-                
-    #             f.write(f"板块: {r}, 止盈率: {1.2}, 止损率: {0.8}, 均线: {ma}, 盈利: {profit:.2f}, 收益率: {profit_rate:.2f}%\n")
-    
-    # # 关闭日志文件
-    # with open(result_file, 'a', encoding='utf-8') as f:
-    #     f.write("回测结束\n")
-    #     f.write("===========================================\n")
-    #     f.close()
-    # 运行回测
-
     # backtrade()
-    profit, profit_rate = backtrade(user_sql,region="江苏板块", zy_rate=1.1, zs_rate=0.9, ma_line=ma_line[0])  # 使用ma30均线
+    market_type = ['科创板','创业板']
+    random.seed(666)  # 设置随机种子以确保可重复性
+    # for i in range(100):
+    #     random.seed(i*1324)
+    profit, profit_rate = backtrade(user_sql,region=["浙江板块",], zy_rate=1.4, 
+                                    zs_rate=0.8, ma_line=ma_line[1], market_type=market_type)
     print(f"回测结果: 盈利: {profit:.2f}, 收益率: {profit_rate:.2f}%")
     
 

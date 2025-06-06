@@ -396,7 +396,7 @@ def backtrade(user_sql, region, zy_rate=1.2, zs_rate=0.8, ma_line='ma30'):
 
     start_date = '2025-01-01'
     end_date = '2025-06-01'
-    result = filter_stocks_by_price_range(start_date, min_price=5, max_price=15, min_market_cap=30, max_market_cap=180, region=region)
+    result = filter_stocks_by_price_range(start_date, min_price=3, max_price=15, min_market_cap=30, max_market_cap=180, region=region)
     stock_list = [item['stock_code'] for item in result]
 
     # 随机打乱股票列表
@@ -441,23 +441,6 @@ def run_backtest_task(args):
     finally:
         user_sql.close()
     return result
-
-def parallel_backtest(tasks):
-    """
-    并行执行回测任务
-    :param tasks: 任务列表，每个任务是一个元组，包含数据库配置和参数
-    :return: 回测结果列表
-    """
-    results = []
-    with concurrent.futures.ProcessPoolExecutor() as executor:
-        future_to_task = {executor.submit(run_backtest_task, task): task for task in tasks}
-        for future in concurrent.futures.as_completed(future_to_task):
-            try:
-                result = future.result()
-                results.append(result)
-            except Exception as exc:
-                print(f'任务 {future_to_task[future]} 生成了异常: {exc}')
-    return results
 
 
 

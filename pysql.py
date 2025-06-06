@@ -189,7 +189,7 @@ class PySQL:
                 
             self.cursor.execute(sql, params)
             results = self.cursor.fetchall()
-            print(f"成功查询到 {len(results)} 行数据")
+            # print(f"成功查询到 {len(results)} 行数据")
             return results
         except Error as e:
             print(f"查询失败: {e}")
