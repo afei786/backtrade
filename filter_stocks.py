@@ -1,6 +1,8 @@
 import pandas as pd
 from datetime import datetime, timedelta
 from pysql import PySQL
+from datetime import datetime, date
+
 
 def filter_stocks_by_price_range(sql, min_price=5, max_price=15,min_market_cap=30, 
                                  max_market_cap=180,region=None, max_days_forward=10,
@@ -49,9 +51,19 @@ def filter_stocks_by_price_range(sql, min_price=5, max_price=15,min_market_cap=3
         return []
     print(f"筛选出 {len(stock_codes)} 只股票")
 
+    if isinstance(start_date, str):
+        start_date = datetime.strptime(start_date, '%Y-%m-%d')
+    elif isinstance(start_date, date) and not isinstance(start_date, datetime):
+        # 如果是date但不是datetime，转为datetime
+        start_date = datetime.combine(start_date, datetime.min.time())
 
-    start_date = datetime.strptime(start_date, '%Y-%m-%d')
-    end_date = datetime.strptime(end_date, '%Y-%m-%d')
+    if isinstance(end_date, str):
+        end_date = datetime.strptime(end_date, '%Y-%m-%d')
+    elif isinstance(end_date, date) and not isinstance(end_date, datetime):
+        end_date = datetime.combine(end_date, datetime.min.time())
+
+    # start_date = datetime.strptime(start_date, '%Y-%m-%d')
+    # end_date = datetime.strptime(end_date, '%Y-%m-%d')
     
     # 存储符合条件的股票代码
     filtered_stocks = []

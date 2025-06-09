@@ -8,105 +8,84 @@ import random
 import yaml
 
 
+
 class StockBacktest:
-    def __init__(self, config_file="settings.yaml"):
+    def __init__(self, data: pd.DataFrame, initial_capital: float = 100000, log_file: str = 'backtest_log.txt',
+                 start_time: str = None, end_time: str = None, stock_list: list = None, index_code: str = '000300.SH',
+                 show_progress: bool = True, zy_rate: float = 1.2, zs_rate: float = 0.8, ma_line: str = 'ma30'):
         """
         初始化回测类
+        :param data: 包含股票数据的DataFrame，应该有stock_code, trade_date, open, high, low, close等列
+        :param initial_capital: 初始资金
+        :param log_file: 日志文件路径
+        :param start_time: 回测开始时间，格式：'YYYY-MM-DD'
+        :param end_time: 回测结束时间，格式：'YYYY-MM-DD'
+        :param stock_list: 股票代码列表
+        :param index_code: 对比指数代码，默认为沪深300
+        :param show_progress: 是否显示进度条，默认为True
         """
-        # 读取配置文件
-        with open(config_file, 'r', encoding='utf-8') as file:
+        with open('settings.yaml', 'r', encoding='utf-8') as file:
             self.settings = yaml.safe_load(file)
-        
-        # sql配置
+            
+        # 数据预处理
+        self.data = data.copy()
+        self.data['trade_date'] = pd.to_datetime(self.data['trade_date'])
         self.sql = PySQL(
-                host=self.settings['sql']['host'],
-                user=self.settings['sql']['user'],
-                password=self.settings['sql']['password'],
-                database=self.settings['sql']['database'],
-                port=self.settings['sql']['port']
+                host='localhost',
+                user='afei',
+                password='sf123456',
+                database='stock',
+                port=3306
             )
         self.sql.connect()
 
-        self.stock_list = filter_stocks_by_price_range(self.sql, min_price=self.settings['min_price'], max_price=self.settings['max_price'],
-                                                  min_market_cap=self.settings['min_market_cap'], max_market_cap=self.settings['max_market_cap'],
-                                                  region=self.settings['region'], not_market_type=self.settings['not_market_type'],
-                                                  start_date=self.settings['start_time'], end_date=self.settings['end_time'])
-        
-        self.data = self.get_stock_data()  # 获取股票数据
-
-        # 数据预处理
-        self.data['trade_date'] = pd.to_datetime(self.data['trade_date'])
-
         # 初始化资金和统计信息
-        self.cash = self.settings["initial_capital"]
-        self.initial_capital = self.settings["initial_capital"]
+        self.initial_capital = initial_capital
+        self.cash = decimal.Decimal(initial_capital)
+        self.balance = decimal.Decimal(initial_capital)
         self.result = {}  # 每日回测结果
-        self.show_progress = self.settings["show_progress"]  # 添加进度条显示控制参数
+        self.max_stock_num = 100
+        self.show_progress = show_progress  # 添加进度条显示控制参数
 
         self.profit = 0.0  # 总盈利
         self.profit_rate = 0.0  # 总收益率
+
+        # 控制变量
+        self.zy_rate = zy_rate
+        self.zs_rate = zs_rate
+        self.ma_line = ma_line
 
         # 记录持仓
         self.position_log = {}  # 'stock_code': {'is_position': True, 'position': 100, 'cost_price': 10.0,'price': 0.0, 'profit': 0.0}
 
         # 设置回测时间范围
-        self.start_time = pd.to_datetime(self.settings['start_time']) if self.settings['start_time'] else self.data['trade_date'].min()
-        self.end_time = pd.to_datetime(self.settings['end_time']) if self.settings['end_time'] else self.data['trade_date'].max()
+        self.start_time = pd.to_datetime(start_time) if start_time else self.data['trade_date'].min()
+        self.end_time = pd.to_datetime(end_time) if end_time else self.data['trade_date'].max()
         self.current_date = self.start_time
         
         # 过滤数据在时间范围内的部分
         self.data = self.data[(self.data['trade_date'] >= self.start_time) & 
                              (self.data['trade_date'] <= self.end_time)].reset_index(drop=True)
         
-        # # 设置股票列表和初始化持仓
-        self.stock_pool = self.stock_list  # 股票池
+        # 设置股票列表和初始化持仓
+        self.stock_pool = stock_list  # 股票池
         self.stocks_position = {}  # 持仓
-        self.zy_list = {}  # 用于记录已止盈卖出的股票
-        self.max_stock_num = self.settings['max_stock_num']  # 最大持仓股票数量
-        self.zy_rate = self.settings['zy_rate']  # 止盈率
-        self.zs_rate = self.settings['zs_rate']
+        self.zy_list = []  # 用于记录已止盈卖出的股票
         # self.stocks_position = {stock: {'available': 0, 'unavailable': 0, 'cost_price': 0.0, 'sell_amount': 0} 
         #                         for stock in self.stock_list}
         
-        # # 获取指数数据
-        self.index_code = self.settings['index_code']
+        # 获取指数数据
+        self.index_code = index_code
         self.index_data = self._get_index_data()
         if not self.index_data.empty:
             self.initial_index_price = float(self.index_data.iloc[0]['open'])  # 初始指数价格
         
-        # # 初始化日志
-        self.log_file_name = self.settings['log_file']
+        # 初始化日志
+        self.log_file_name = log_file
         self._init_log()
         
         # 启动回测
         # self.run_backtest()
-
-    def get_stock_data(self,):
-        if not self.stock_list:
-            print(f"没有找到符合条件的股票，区域: {self.settings['region']}, 起始日期: {self.settings['start_time']}, 结束日期: {self.settings['end_time']}")
-            # return -100, -100
-            return None
-        
-        # 打乱股票列表
-        random.seed(self.settings['random_seed'])
-        random.shuffle(self.stock_list)
-        
-        # stock_list = ['002594.XSHE']
-        
-        # 创建IN查询的占位符
-        placeholders = ', '.join(['%s'] * len(self.stock_list))
-        where_clause = f'trade_date > "{self.settings["start_time"]}" AND trade_date < "{self.settings["end_time"]}" AND stock_code IN ({placeholders})'
-        
-        self.stocks_data = self.sql.select('stock_daily_k',
-                        columns=['stock_code','trade_date','open','high','low','close','change_value','pct_change','ma5','ma10','ma20','ma30','ma45','ma60'],
-                        where=where_clause, 
-                        params=self.stock_list)
-        
-        # 准备数据
-        df = pd.DataFrame(self.stocks_data)
-        df = df[['stock_code', 'trade_date', 'open', 'high', 'low', 'close', 'change_value','pct_change','ma5','ma10','ma20','ma30','ma45','ma60']]
-        return df
-        
 
     def _init_log(self):
         """初始化日志文件"""
@@ -186,48 +165,13 @@ class StockBacktest:
             }
             # 直接删除持仓信息
             del self.stocks_position[stock]
-            self.zy_list[stock] = {'price': self.close_price, 'time': self.current_date.strftime('%Y-%m-%d')}  # 记录止盈股票
+            self.zy_list.append(stock)
         else:
             revenue = float(price * amount)  # 卖出金额
             profit = revenue - self.stocks_position[stock]['cost_price'] * amount  # 卖出盈利
             self.cash += decimal.Decimal(revenue)  # 更新现金
             self.stocks_position[stock]['available'] -= amount
             self.log_message(f"卖出 {stock} {amount} 股 @ {price:.2f}，获利 {profit:.2f}，剩余资金 {self.cash:.2f}")
-
-    def backtrade(user_sql, region, zy_rate=1.2, zs_rate=0.8, ma_line='ma30', market_type=None):
-
-        start_date = '2024-10-01'
-        end_date = '2025-06-01'
-        stock_list = filter_stocks_by_price_range(user_sql, min_price=12, max_price=25, min_market_cap=30, max_market_cap=180, region=region, not_market_type=market_type)
-        if not stock_list:
-            print(f"没有找到符合条件的股票，区域: {region}, 起始日期: {start_date}, 结束日期: {end_date}")
-            return -100, -100
-
-        # 随机打乱股票列表
-        random.shuffle(stock_list)
-        # stock_list = stock_list[:1000]
-        
-        # stock_list = ['002594.XSHE']
-        
-        
-        # 创建IN查询的占位符
-        placeholders = ', '.join(['%s'] * len(stock_list))
-        where_clause = f'trade_date > "{start_date}" AND trade_date < "{end_date}" AND stock_code IN ({placeholders})'
-        
-        stocks_data = user_sql.select('stock_daily_k',
-                        columns=['stock_code','trade_date','open','high','low','close','change_value','pct_change','ma5','ma10','ma20','ma30','ma45','ma60'],
-                        where=where_clause, 
-                        params=stock_list)
-        
-        # 准备数据
-        df = pd.DataFrame(stocks_data)
-        df = df[['stock_code', 'trade_date', 'open', 'high', 'low', 'close', 'change_value','pct_change','ma5','ma10','ma20','ma30','ma45','ma60']]
-        
-        # 使用方法1：运行回测并显示进度条（默认）
-        mybt = StockBacktest(df, initial_capital=100000, stock_list=stock_list, show_progress=True, zy_rate=zy_rate, zs_rate=zs_rate, ma_line=ma_line)
-        profit, profit_rate = mybt.run_backtest()
-        return profit, profit_rate
-
 
     def _get_index_data(self):
         """获取指数数据"""
@@ -361,7 +305,6 @@ class StockBacktest:
         # 移动到下一天
         self.current_date += timedelta(days=1)
 
-
     def _apply_strategy(self, current_data):
         """应用交易策略"""  
             
@@ -369,7 +312,7 @@ class StockBacktest:
             if self.cash < 5000:
                 self.log_message("资金不足5000，暂停交易，保留流动资金")
                 return
-            if len(self.stocks_position) > self.max_stock_num and self.cash < 8000:
+            if len(self.stocks_position) > self.max_stock_num:
                 self.log_message(f"股票数量超过{self.max_stock_num}，暂停交易，等待股票数量减少")
                 return
             
@@ -381,22 +324,18 @@ class StockBacktest:
             self.close_price = float(stock_data['close'].values[0])
             self.low_price = float(stock_data['low'].values[0])
             self.high_price = float(stock_data['high'].values[0])
-            self.ma = float(stock_data[self.settings['ma_line']].values[0])
-            self.zy_ma_line = float(stock_data[self.settings['zy_ma_line']].values[0])
+            self.ma = float(stock_data[self.ma_line].values[0])
 
             self.strategy(stock)          
-
-
+    
     def check_position(self, stock):
         """检查持仓情况"""
         if self.open_price/self.stocks_position[stock]['cost_price'] > self.zy_rate:  # 盈利15%卖出
             self.sell(stock, self.open_price, -1)
         
         elif self.open_price/self.stocks_position[stock]['cost_price'] < self.zs_rate :  # 亏损20%补仓
-            if self.stocks_position[stock]['available'] < 200:  # 如果有可用持仓，则补仓
-                self.buy(stock, self.open_price, 100, additional=True)
-
-
+            self.buy(stock, self.open_price, 100, additional=True)
+        
     def strategy(self,stock):
         """
         盘中买入策略
@@ -408,12 +347,6 @@ class StockBacktest:
             # if 5<= self.low_price <= 15 and self.open_price <= self.ma:  # 如果开盘价小于30日均线，则买入
             #     self.stocks_position[stock] = {'available': 0, 'unavailable': 0, 'cost_price': 0.0, 'close_price': 0.0}  #, 'sell_amount': 0}
             #     self.buy(stock, self.low_price, 100)  # 建仓
-        elif stock in self.zy_list:
-            if self.zy_ma_line >= self.zy_list[stock]['price']:
-                self.stocks_position[stock] = {'available': 0, 'unavailable': 0, 'cost_price': 0.0, 'close_price': 0.0}  #, 'sell_amount': 0}
-                self.buy(stock, self.open_price, 100)  # 建仓
-                del self.zy_list[stock]  # 删除止盈股票记录
-
             
         
     def run_backtest(self):
@@ -452,9 +385,7 @@ class StockBacktest:
         for stock in self.position_log:
             self.log.write(f"{stock} 是否持仓: {self.position_log[stock]['is_position']}, 持仓数：{self.position_log[stock]['position']}, 成本价：{self.position_log[stock]['cost_price']:.2f}, ")
             self.log.write(f"现价：{self.position_log[stock]['price']:.2f}, 盈亏：{float(self.position_log[stock]['profit']):.2f}\n")
-        self.log.write("===========================================\n")
-        for stock in self.zy_list:
-            self.log.write(f"{stock} 止盈价: {self.zy_list[stock]['price']:.2f}, 止盈时间: {self.zy_list[stock]['time']}\n")
+        
         self.log.write("===========================================\n")
         self.log.write("回测结束\n")
         self.log.close()
@@ -469,6 +400,39 @@ class StockBacktest:
         df1.columns = ['stock_code','is_position', 'position', 'cost_price', 'price', 'profit']
         df1.to_csv("position_log.csv", index=False, encoding='utf-8')
 
+def backtrade(user_sql, region, zy_rate=1.2, zs_rate=0.8, ma_line='ma30', market_type=None):
+
+    start_date = '2024-10-01'
+    end_date = '2025-06-01'
+    stock_list = filter_stocks_by_price_range(user_sql, min_price=12, max_price=25, min_market_cap=30, max_market_cap=180, region=region, not_market_type=market_type)
+    if not stock_list:
+        print(f"没有找到符合条件的股票，区域: {region}, 起始日期: {start_date}, 结束日期: {end_date}")
+        return -100, -100
+
+    # 随机打乱股票列表
+    random.shuffle(stock_list)
+    # stock_list = stock_list[:1000]
+    
+    # stock_list = ['002594.XSHE']
+    
+    
+    # 创建IN查询的占位符
+    placeholders = ', '.join(['%s'] * len(stock_list))
+    where_clause = f'trade_date > "{start_date}" AND trade_date < "{end_date}" AND stock_code IN ({placeholders})'
+    
+    stocks_data = user_sql.select('stock_daily_k',
+                    columns=['stock_code','trade_date','open','high','low','close','change_value','pct_change','ma5','ma10','ma20','ma30','ma45','ma60'],
+                    where=where_clause, 
+                    params=stock_list)
+    
+    # 准备数据
+    df = pd.DataFrame(stocks_data)
+    df = df[['stock_code', 'trade_date', 'open', 'high', 'low', 'close', 'change_value','pct_change','ma5','ma10','ma20','ma30','ma45','ma60']]
+    
+    # 使用方法1：运行回测并显示进度条（默认）
+    mybt = StockBacktest(df, initial_capital=100000, stock_list=stock_list, show_progress=True, zy_rate=zy_rate, zs_rate=zs_rate, ma_line=ma_line)
+    profit, profit_rate = mybt.run_backtest()
+    return profit, profit_rate
 
 def run_all_params():
     # 从数据库获取数据
@@ -517,12 +481,33 @@ def run_all_params():
 
 
 if __name__ == '__main__':
-    my_bt = StockBacktest()
-    profit, profit_rate = my_bt.run_backtest()
+    # 从数据库获取数据
+    user_sql_config = {
+        'host': 'localhost',
+        'user': 'afei',
+        'password': 'sf123456',
+        'database': 'stock',
+        'port': 3306
+    }
+    user_sql = PySQL(**user_sql_config)
+    user_sql.connect()
+    
+    # zy_rate = [1.1, 1.15, 1.2, 1.25, 1.3, 1.35, 1.4]  # 止盈率列表
+    # zs_rate = [0.9, 0.85, 0.8, 0.75, 0.7, 0.65, 0.6]  # 止损率列表
+    ma_line = ['ma5', 'ma10', 'ma20', 'ma30', 'ma45', 'ma60']  # 均线列表
+
+    # result_file = 'backtest_results2.txt'
+    # # finished_tasks = parse_finished_tasks(result_file)
+
+    # backtrade()
+    market_type = ['科创板','创业板']
+    random.seed(666)  # 设置随机种子以确保可重复性
+    # for i in range(100):
+    #     random.seed(i*1324)
+    profit, profit_rate = backtrade(user_sql,region=["浙江板块",], zy_rate=1.6, 
+                                    zs_rate=0.8, ma_line=ma_line[1], market_type=market_type)
     print(f"回测结果: 盈利: {profit:.2f}, 收益率: {profit_rate:.2f}%")
+    
 
     from backtest_report_generator import main
     main()
-
-
-
