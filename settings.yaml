@@ -1,20 +1,20 @@
 start_time: 2024-6-01
 end_time: 2025-5-31
-min_price: 12
-max_price: 20
+min_price: 8
+max_price: 28
 min_market_cap: 30
-max_market_cap: 180
+max_market_cap: 300
 initial_capital: 100000
 zy_rate: 1.3
-zs_rate: 0.85
+zs_rate: 0.7
 log_file: backtest_log.txt
-ma_line: ma5
-zy_ma_line: ma30
-region: ['浙江板块','江苏板块']
+ma_line: ma10
+zy_ma_line: ma20
+region: ['浙江板块']
 not_market_type: ['创业板', '科创板']
 max_stock_num: 100
 index_code: 000001.SH
-random_seed: 41685453
+random_seed: 666
 
 # sql
 sql:

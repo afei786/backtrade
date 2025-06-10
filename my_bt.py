@@ -27,14 +27,16 @@ class StockBacktest:
             )
         self.sql.connect()
 
+        # 获取股票列表
         self.stock_list = filter_stocks_by_price_range(self.sql, min_price=self.settings['min_price'], max_price=self.settings['max_price'],
                                                   min_market_cap=self.settings['min_market_cap'], max_market_cap=self.settings['max_market_cap'],
                                                   region=self.settings['region'], not_market_type=self.settings['not_market_type'],
                                                   start_date=self.settings['start_time'], end_date=self.settings['end_time'])
         
+        # 获取股票数据
         self.data = self.get_stock_data()  # 获取股票数据
 
-        # 数据预处理
+        # 转换数据格式
         self.data['trade_date'] = pd.to_datetime(self.data['trade_date'])
 
         # 初始化资金和统计信息
@@ -84,7 +86,6 @@ class StockBacktest:
     def get_stock_data(self,):
         if not self.stock_list:
             print(f"没有找到符合条件的股票，区域: {self.settings['region']}, 起始日期: {self.settings['start_time']}, 结束日期: {self.settings['end_time']}")
-            # return -100, -100
             return None
         
         # 打乱股票列表
@@ -114,12 +115,14 @@ class StockBacktest:
         self.log.write(f"回测日志 - 初始资本: {self.initial_capital}\n")
         self.log.write("===========================================\n")
 
+
     def log_message(self, message: str):
         """记录日志消息"""
         log_entry = f"[{datetime.strftime(self.current_date, '%Y-%m-%d')}] {message}"
         self.log.write(log_entry + "\n")
         # print(log_entry)
     
+
     def buy(self, stock: str, price: float, amount: int, additional: bool = False):
         """买入操作"""
         if stock in self.zy_list:  # 如果股票在止盈列表中，则不再买入
@@ -131,7 +134,7 @@ class StockBacktest:
             
         self.cash -= decimal.Decimal(cost)
         if stock not in self.stocks_position:
-            self.stocks_position[stock] = {'available': 0, 'unavailable': 0, 'cost_price': 0.0, 'sell_amount': 0}
+            self.stocks_position[stock] = {'available': 0, 'unavailable': 0, 'cost_price': 0.0, 'sell_amount': 0, 'buy_date': self.current_date}
         self.stocks_position[stock]['unavailable'] = amount
         
         # 计算成本价
@@ -161,6 +164,7 @@ class StockBacktest:
 
         return True
 
+
     def sell(self, stock: str, price: float, amount: int):
         """卖出操作"""
         if self.stocks_position[stock]['available'] == 0 or amount > self.stocks_position[stock]['available']:
@@ -182,7 +186,8 @@ class StockBacktest:
                 'position': self.stocks_position[stock]['available'],
                 'cost_price': self.stocks_position[stock]['cost_price'],
                 'price': price,
-                'profit': f"{profit:.2f}"
+                'profit': f"{profit:.2f}",
+                'profit_rate': f"{(profit / (self.stocks_position[stock]['cost_price'] * self.stocks_position[stock]['available'])) * 100:.2f}",
             }
             # 直接删除持仓信息
             del self.stocks_position[stock]
@@ -193,6 +198,7 @@ class StockBacktest:
             self.cash += decimal.Decimal(revenue)  # 更新现金
             self.stocks_position[stock]['available'] -= amount
             self.log_message(f"卖出 {stock} {amount} 股 @ {price:.2f}，获利 {profit:.2f}，剩余资金 {self.cash:.2f}")
+
 
     def backtrade(user_sql, region, zy_rate=1.2, zs_rate=0.8, ma_line='ma30', market_type=None):
 
@@ -273,13 +279,13 @@ class StockBacktest:
                 # 使用列表副本遍历，避免在遍历过程中修改字典结构
                 stocks_position_keys = list(self.stocks_position.keys())
                 for stock in stocks_position_keys:
-                    
                     stock_data = current_data[current_data['stock_code'] == stock]
                     if stock_data.empty:
                         continue
-                        
                     self.open_price = float(stock_data['open'].values[0])
                     self.close_price = float(stock_data['close'].values[0])
+                    self.low_price = float(stock_data['low'].values[0])
+                    self.high_price = float(stock_data['high'].values[0])
                     self.check_position(stock)
                 self.log_message(f'盘前整理完成')
 
@@ -323,13 +329,14 @@ class StockBacktest:
 
                 market_cap += float(self.close_price * self.stocks_position[stock]['available'])
 
-                self.log_message(f"{stock} 持仓: {available_amount}, 成本价：{cost_price:.2f}, 收盘价：{close_price:.2f}, 当日盈亏：{day_profit:.2f}, 累计盈亏：{profit:.2f}, 累计收益率: {profit_rate:.2f}%")
+                self.log_message(f"{stock} 持仓: {available_amount}, 成本价：{cost_price:.2f}, 收盘价：{close_price:.2f}, 当日盈亏：{day_profit:.2f}, 累计盈亏：{profit:.2f}, 累计收益率: {profit_rate:.2f}%, 买入日期：{self.stocks_position[stock]['buy_date']}")
                 self.position_log[stock] = {
                     'is_position': True,
                     'position': available_amount,
                     'cost_price': cost_price,
                     'price': close_price,
-                    'profit': f"{profit:.2f}"
+                    'profit': f"{profit:.2f}",
+                    'profit_rate': f"{profit_rate:.2f}",
                 }
             
             total_profit = market_cap + float(self.cash) - float(self.initial_capital)
@@ -389,12 +396,27 @@ class StockBacktest:
 
     def check_position(self, stock):
         """检查持仓情况"""
-        if self.open_price/self.stocks_position[stock]['cost_price'] > self.zy_rate:  # 盈利15%卖出
+        if stock in self.stocks_position:
+            if (self.current_date - self.stocks_position[stock]['buy_date']).days > 45 and self.open_price/self.stocks_position[stock]['cost_price'] > 1.1:
+                self.sell(stock, self.high_price, -1)
+                return
+            elif (self.current_date - self.stocks_position[stock]['buy_date']).days > 60 and self.open_price/self.stocks_position[stock]['cost_price'] > 0.0:
+                self.sell(stock, self.high_price, -1)
+                return 
+
+        if self.open_price == self.close_price == self.low_price == self.high_price:  # 如果开盘价等于收盘价等于最高价等于最低价，则不进行操作
+            return
+        if self.open_price/self.stocks_position[stock]['cost_price'] > self.zy_rate:  # 止盈
             self.sell(stock, self.open_price, -1)
-        
+        elif self.high_price/self.stocks_position[stock]['cost_price'] > self.zy_rate:  # 止盈
+            self.sell(stock, self.high_price, -1)
+
         elif self.open_price/self.stocks_position[stock]['cost_price'] < self.zs_rate :  # 亏损20%补仓
-            if self.stocks_position[stock]['available'] < 200:  # 如果有可用持仓，则补仓
-                self.buy(stock, self.open_price, 100, additional=True)
+            # if self.stocks_position[stock]['available'] < 200:  # 如果有可用持仓，则补仓
+            self.buy(stock, self.open_price, 100, additional=True)
+        elif self.low_price/self.stocks_position[stock]['cost_price'] < self.zs_rate:  # 止损
+            self.buy(stock, self.open_price, 100, additional=True)
+
 
 
     def strategy(self,stock):
@@ -402,9 +424,15 @@ class StockBacktest:
         盘中买入策略
         """
         if stock not in self.stocks_position and stock not in self.zy_list:
-            if 5<= self.open_price <= 15 and self.open_price <= self.ma:
-                self.stocks_position[stock] = {'available': 0, 'unavailable': 0, 'cost_price': 0.0, 'close_price': 0.0}  #, 'sell_amount': 0}
+            if self.settings['min_price'] <= self.open_price <= self.settings['max_price'] and self.open_price <= self.ma:
+            # if self.open_price <= self.ma:
+                self.stocks_position[stock] = {'available': 0, 'unavailable': 0, 'cost_price': 0.0, 'close_price': 0.0, 'buy_date': self.current_date}  #, 'sell_amount': 0}
                 self.buy(stock, self.open_price, 100)  # 建仓
+            elif self.settings['min_price'] <= self.low_price <= self.settings['max_price'] and self.low_price <= self.ma:
+                self.stocks_position[stock] = {'available': 0, 'unavailable': 0, 'cost_price': 0.0, 'close_price': 0.0, 'buy_date': self.current_date}  #, 'sell_amount': 0}
+                self.buy(stock, self.low_price+0.05, 100)  # 建仓
+            
+            # elif self.settings['min_price']
             # if 5<= self.low_price <= 15 and self.open_price <= self.ma:  # 如果开盘价小于30日均线，则买入
             #     self.stocks_position[stock] = {'available': 0, 'unavailable': 0, 'cost_price': 0.0, 'close_price': 0.0}  #, 'sell_amount': 0}
             #     self.buy(stock, self.low_price, 100)  # 建仓
@@ -414,8 +442,7 @@ class StockBacktest:
                 self.buy(stock, self.open_price, 100)  # 建仓
                 del self.zy_list[stock]  # 删除止盈股票记录
 
-            
-        
+                
     def run_backtest(self):
         """运行回测过程"""
         # 计算总天数
@@ -446,12 +473,13 @@ class StockBacktest:
 
         return self.profit, self.profit_rate
 
+
     def close_log(self):
         """关闭日志文件"""
 
         for stock in self.position_log:
             self.log.write(f"{stock} 是否持仓: {self.position_log[stock]['is_position']}, 持仓数：{self.position_log[stock]['position']}, 成本价：{self.position_log[stock]['cost_price']:.2f}, ")
-            self.log.write(f"现价：{self.position_log[stock]['price']:.2f}, 盈亏：{float(self.position_log[stock]['profit']):.2f}\n")
+            self.log.write(f"现价：{self.position_log[stock]['price']:.2f}, 盈亏：{float(self.position_log[stock]['profit']):.2f}, 收益率：{self.position_log[stock]['profit_rate']}%\n")
         self.log.write("===========================================\n")
         for stock in self.zy_list:
             self.log.write(f"{stock} 止盈价: {self.zy_list[stock]['price']:.2f}, 止盈时间: {self.zy_list[stock]['time']}\n")
@@ -466,7 +494,7 @@ class StockBacktest:
         df.to_csv("output.csv", index=False, encoding='utf-8')
 
         df1 = pd.DataFrame.from_dict(self.position_log, orient='index').reset_index()
-        df1.columns = ['stock_code','is_position', 'position', 'cost_price', 'price', 'profit']
+        df1.columns = ['stock_code','is_position', 'position', 'cost_price', 'price', 'profit', 'profit_rate']
         df1.to_csv("position_log.csv", index=False, encoding='utf-8')
 
 
