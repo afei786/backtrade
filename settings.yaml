@@ -1,12 +1,12 @@
-start_time: 2024-6-01
+start_time: 2020-01-01
 end_time: 2025-5-31
-min_price: 8
+min_price: 7
 max_price: 28
 min_market_cap: 30
 max_market_cap: 300
 initial_capital: 100000
 zy_rate: 1.3
-zs_rate: 0.7
+zs_rate: 0.6
 log_file: backtest_log.txt
 ma_line: ma10
 zy_ma_line: ma20
